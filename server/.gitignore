@@ -65,6 +65,7 @@ web_modules/
 # Yarn Integrity file
 .yarn-integrity
 
+src/generated/prisma
 # dotenv environment variable files
 .env
 .env.*
@@ -139,3 +140,5 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+/generated/prisma
