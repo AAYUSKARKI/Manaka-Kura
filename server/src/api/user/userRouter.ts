@@ -57,3 +57,13 @@ userRegistry.registerPath({
 });
 
 userRouter.post("/user/login", userController.loginUser);
+
+userRegistry.registerPath({
+    method: "get",
+    path: "/api/user",
+    summary: "Get all users",
+    tags: ["User"],
+    responses: createApiResponse(userSchema, "Users fetched successfully", StatusCodes.OK),
+});
+
+userRouter.get("/user", userController.getAllUsers);
