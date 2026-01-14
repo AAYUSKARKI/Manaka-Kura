@@ -35,6 +35,7 @@ class UserService {
             if (!user) {
                 throw new NotFoundError("User not found");
             }
+            await this.userRepository.updateLastLogin(data.username);
             return ServiceResponse.success<User>("User logged in successfully", user, StatusCodes.OK);
         } catch (error) {
             logger.error("Error logging in user:", error);
