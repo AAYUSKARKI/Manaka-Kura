@@ -45,6 +45,16 @@ class UserService {
             return ServiceResponse.failure("Failed to log in user", null, StatusCodes.INTERNAL_SERVER_ERROR);
         }
     }
+
+    async getAllUsers(): Promise<ServiceResponse<User[]>> {
+        try {
+            const users = await this.userRepository.getAllUsers();
+            return ServiceResponse.success<User[]>("Users fetched successfully", users, StatusCodes.OK);
+        } catch (error) {
+            logger.error("Error fetching users:", error);
+            return ServiceResponse.failure("Failed to fetch users", [], StatusCodes.INTERNAL_SERVER_ERROR);
+        }
+    }
 }
 
 export const userService = new UserService();
