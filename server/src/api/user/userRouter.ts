@@ -36,3 +36,24 @@ userRegistry.registerPath({
 });
 
 userRouter.post("/user", userController.createUser);
+
+userRegistry.registerPath({
+    method: "post",
+    path: "/api/user/login",
+    summary: "Log in a user",
+    tags: ["User"],
+    request: {
+        body: {
+            description: "User object that needs to be logged in",
+            required: true,
+            content: {
+                "application/json": {
+                    schema: CreateUserSchema,
+                },
+            },
+        },
+    },
+    responses: createApiResponse(userSchema, "User logged in successfully", StatusCodes.OK),
+});
+
+userRouter.post("/user/login", userController.loginUser);

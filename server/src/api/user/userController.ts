@@ -8,6 +8,12 @@ class UserController {
         const serviceResponse: ServiceResponse<User | null> = await userService.createUser(data);
         return handleServiceResponse(serviceResponse, res);
     }
+
+    public loginUser: RequestHandler = async (req: Request, res: Response) => {
+        const data = CreateUserSchema.parse(req.body);
+        const serviceResponse: ServiceResponse<User | null> = await userService.createUser(data);
+        return handleServiceResponse(serviceResponse, res);
+    }
 }
 
 export const userController = new UserController();

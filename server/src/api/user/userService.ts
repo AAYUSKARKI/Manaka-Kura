@@ -28,6 +28,22 @@ class UserService {
             return ServiceResponse.failure("Failed to create user", null, StatusCodes.INTERNAL_SERVER_ERROR);
         }
     }
+
+    async loginUser(username: string): Promise<ServiceResponse<User | null>> {
+        try {
+            const user = await this.userRepository.getUser(username);
+            if (!user) {
+                throw new ConflictError("User not found");
+            }
+            return ServiceResponse.success<User>("User logged in successfully", user, StatusCodes.OK);
+        } catch (error) {
+            logger.error("Error logging in user:", error);
+            if (error instanceof ConflictError) {
+                return ServiceResponse.failure(error.message, null, error.statusCode);
+            }
+            return ServiceResponse.failure("Failed to log in user", null, StatusCodes.INTERNAL_SERVER_ERROR);
+        }
+    }
 }
 
 export const userService = new UserService();
