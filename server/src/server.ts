@@ -12,7 +12,7 @@ const server = http.createServer(app);
 app.use(helmet());
 app.use(rateLimiter);
 app.use(cors({
-    origin: "http://localhost:5173",
+    origin: process.env.CORS_ORIGIN,
     credentials: true
 }));
 app.use(express.json());
