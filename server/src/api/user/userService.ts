@@ -1,7 +1,7 @@
 import { StatusCodes } from "http-status-codes";
 import { User, type CreateUser } from "./userModel";
 import { UserRepository } from "./userRepository";
-import { ConflictError } from "@/common/utils/customError";
+import { ConflictError, NotFoundError } from "@/common/utils/customError";
 import { ServiceResponse } from "@/common/utils/serviceResponse";
 import logger from "@/common/utils/logger";
 
@@ -33,12 +33,12 @@ class UserService {
         try {
             const user = await this.userRepository.getUser(data.username);
             if (!user) {
-                throw new ConflictError("User not found");
+                throw new NotFoundError("User not found");
             }
             return ServiceResponse.success<User>("User logged in successfully", user, StatusCodes.OK);
         } catch (error) {
             logger.error("Error logging in user:", error);
-            if (error instanceof ConflictError) {
+            if (error instanceof NotFoundError) {
                 return ServiceResponse.failure(error.message, null, error.statusCode);
             }
             return ServiceResponse.failure("Failed to log in user", null, StatusCodes.INTERNAL_SERVER_ERROR);
