@@ -11,7 +11,7 @@ class UserController {
 
     public loginUser: RequestHandler = async (req: Request, res: Response) => {
         const data = CreateUserSchema.parse(req.body);
-        const serviceResponse: ServiceResponse<User | null> = await userService.createUser(data);
+        const serviceResponse: ServiceResponse<User | null> = await userService.loginUser(data);
         return handleServiceResponse(serviceResponse, res);
     }
 }

@@ -29,9 +29,9 @@ class UserService {
         }
     }
 
-    async loginUser(username: string): Promise<ServiceResponse<User | null>> {
+    async loginUser(data: CreateUser): Promise<ServiceResponse<User | null>> {
         try {
-            const user = await this.userRepository.getUser(username);
+            const user = await this.userRepository.getUser(data.username);
             if (!user) {
                 throw new ConflictError("User not found");
             }
