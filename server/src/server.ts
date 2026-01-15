@@ -7,6 +7,7 @@ import errorHandler from "./common/middleware/errorHandler";
 import { Server } from "socket.io";
 import { userRouter } from "./api/user/userRouter";
 import { openAPIRouter } from "./api-docs/openAPIRouter";
+import { setupSocketHandlers } from "./socket";
 
 const app: Express = express();
 const server = http.createServer(app);
@@ -17,7 +18,7 @@ const io = new Server(server, {
         credentials: true
     }
 });
-
+setupSocketHandlers(io);
 // Middlewares
 app.use(helmet());
 app.use(rateLimiter);
@@ -34,4 +35,4 @@ app.use(openAPIRouter);
 
 app.use(errorHandler());
 
-export { server, io };
+export { server };
