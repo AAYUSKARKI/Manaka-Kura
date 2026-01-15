@@ -20,12 +20,25 @@
 - **Icons:** Lucide React
 
 ### Backend
-- **Server:** Node.js / Express.js
+- **Server:** Node.js / Express.js (TypeScript)
 - **Real-time Engine:** Socket.io (WebSocket)
-- **State Management:** React Context API
+- **Validation:** Zod (Type-safe schemas)
+- **Security:** Helmet, CORS, and Custom Rate Limiting
+- **Logging:** Winston
+- **Database:** PostgreSQL (Prisma ORM)
 
 ---
 
+## 🛡️ Production-Grade Architecture
+
+To ensure low latency without sacrificing security, the backend implements a layered defense:
+
+- **Layer 1: Rate Limiting:** Sliding-window rate limiting for socket events to prevent spam/DDoS.
+- **Layer 2: Schema Validation:** Every incoming socket message is validated via **Zod Discriminated Unions** before processing.
+- **Layer 3: Decoupled Handlers:** Business logic is separated into standalone handlers (Auth, Signal, Status) for easier testing and scalability.
+- **Layer 4: Signaling Relay:** Robust WebRTC signaling with validation for SDP and ICE candidates.
+
+---
 ## 📥 Getting Started
 
 ### Prerequisites
@@ -49,6 +62,10 @@
     cd server
     npm install
     # Configure environment variables
+    PORT=3000
+    CORS_ORIGIN=http://localhost:5173
+    COMMON_RATE_LIMIT_MAX_REQUESTS=100
+    COMMON_RATE_LIMIT_WINDOW_MS=900000
     npm run dev
     ```
 
