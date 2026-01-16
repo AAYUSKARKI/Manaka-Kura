@@ -1,13 +1,15 @@
 import { Socket, Server } from "socket.io";
 import logger from "@/common/utils/logger";
 import { broadCastService } from "@/common/services/broadCastService";
-import { connectedUsers, getOnlineUsers } from "@/types/ConnectedUser";
+import { connectedUsers } from "@/types/ConnectedUser";
 import { socketRateLimiter } from "@/common/middleware/socketRateLimiter";
 import { SocketMessageSchema, StatusEnum } from "./schemas/messageSchema";
 import { handleAuth } from "./handlers/authHandler";
 import { handleStatusChange } from "./handlers/statusHandler";
 import { handleSignal } from "./handlers/signalHandler";
 import { sendError } from "@/common/utils/socketUtils";
+import { handleChatMessage } from "./handlers/chatHandler";
+import { handleTypingStart, handleTypingStop } from "./handlers/typingHandler";
 
 export const setupSocketHandlers = (io: Server) => {
     io.on("connection", (socket: Socket) => {
@@ -16,7 +18,8 @@ export const setupSocketHandlers = (io: Server) => {
         let messageCount = 0;
         logger.info(`New client connected: ${socket.id} from IP: ${clientIp}`);
 
-        socket.on("message", async (data: string | Buffer) => {
+        socket.on("message", async (data: any) => {
+            console.log(data)
             messageCount++;
             const rateLimit = socketRateLimiter.check(clientIp);
             if (!rateLimit.allowed) {
@@ -25,7 +28,9 @@ export const setupSocketHandlers = (io: Server) => {
                 return;
             }
             try {
-                const rawData = JSON.parse(data.toString());
+                const rawData = (typeof data === "string" || Buffer.isBuffer(data))
+                    ? JSON.parse(data.toString())
+                    : data;
                 const result = SocketMessageSchema.safeParse(rawData);
 
                 if (!result.success) {
@@ -48,6 +53,18 @@ export const setupSocketHandlers = (io: Server) => {
 
                     case "signal":
                         await handleSignal(userId, message);
+                        break;
+
+                    case "chat_message":
+                        await handleChatMessage(userId, message.content);
+                        break;
+
+                    case "typing_start":
+                        handleTypingStart(userId);
+                        break;
+
+                    case "typing_stop":
+                        handleTypingStop(userId);
                         break;
 
                     default:

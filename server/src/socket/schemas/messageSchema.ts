@@ -15,6 +15,22 @@ export const SocketMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("signal"),
   }).extend(SignalPayloadSchema.shape),
+  z.object({
+    type: z.literal("typing_start"),
+    fromUserId: z.string(),
+    username: z.string(),
+  }),
+  z.object({
+    type: z.literal("typing_stop"),
+    fromUserId: z.string(),
+    username: z.string(),
+  }),
+  z.object({
+    type: z.literal("chat_message"),
+    fromUserId: z.string(),
+    username: z.string(),
+    content: z.string(),
+  }),
 ]);
 
 export type SocketMessage = z.infer<typeof SocketMessageSchema>;
