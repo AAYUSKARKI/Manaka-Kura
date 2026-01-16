@@ -1,40 +1,85 @@
-import { useEffect, useRef, useState } from "react";
-import { WebRTCManager } from "@/services/webrtc/WebRTCManager"; // Assuming path
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
-import { Loader2 } from "lucide-react";
-import { Mic, Radio, LogOut, UserCircle, Signal, AlertTriangle, CheckCircle } from "lucide-react";
-import { cn } from "@/lib/utils"; // Shadcn cn utility
+import { Loader2, Mic, Radio, LogOut, Signal, Moon, Sun, Volume2, MessageSquare, ArrowLeft } from "lucide-react";
+import { cn } from "@/lib/utils";
 import type { Socket } from "socket.io-client";
 import { connectSocket } from "@/services/socket/socketService";
+import { useWebRTC } from "@/hooks/useWebRTC";
+import { Switch } from "@/components/ui/switch";
+import { Slider } from "@/components/ui/slider";
+import { Textarea } from "@/components/ui/textarea";
 
 interface User {
   userId: string;
   username: string;
   status: string;
   connectionState?: string;
+  audioLevel?: number;
+}
+
+interface Message {
+  id: string;
+  userId: string;
+  content: string;
+  timestamp: Date;
 }
 
 export default function ManakaKura() {
   const [currentUser, setCurrentUser] = useState<{ username: string } | null>(null);
   const [onlineUsers, setOnlineUsers] = useState<Map<string, User>>(new Map());
   const [userStatus, setUserStatus] = useState<"online" | "busy" | "away">("online");
-  const [isPTTPressed, setIsPTTPressed] = useState(false);
   const [loginError, setLoginError] = useState("");
   const [connectionText, setConnectionText] = useState("Connecting...");
   const [isConnected, setIsConnected] = useState(false);
-  const [audioStatusMessage, setAudioStatusMessage] = useState("Initializing audio...");
-  const [audioStatusState, setAudioStatusState] = useState<"ready" | "transmitting" | "receiving" | "error">("ready");
   const [isLoading, setIsLoading] = useState(false);
   const [isStatusModalOpen, setIsStatusModalOpen] = useState(false);
+  const [animateJoin, setAnimateJoin] = useState<string | null>(null);
+  const [isDarkMode, setIsDarkMode] = useState(() => {
+    if (typeof window !== 'undefined') {
+      return localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    }
+    return false;
+  });
+  const [globalVolume, setGlobalVolume] = useState(1);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [newMessage, setNewMessage] = useState("");
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [audioLevels, setAudioLevels] = useState<Record<string, number>>({});
 
   const usernameInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<Socket | null>(null);
-  const webrtcRef = useRef<WebRTCManager | null>(null);
-  console.log(audioStatusState)
+  const chatRef = useRef<HTMLDivElement>(null);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const updateUserConnectionState = useCallback((userId: string, state: string) => {
+    setOnlineUsers((prev) => {
+      const newMap = new Map(prev);
+      const user = newMap.get(userId);
+      if (user) {
+        user.connectionState = state;
+      }
+      return newMap;
+    });
+  }, []);
+
+  const {
+    audioStatus,
+    initiateOffer,
+    handleSignal,
+    startTalking,
+    stopTalking,
+    isInitialized
+  } = useWebRTC({
+    socket: socketRef.current,
+    username: currentUser?.username,
+    onConnectionStateChange: updateUserConnectionState
+  });
+
   useEffect(() => {
     // Service Worker registration
     if ("serviceWorker" in navigator) {
@@ -44,6 +89,45 @@ export default function ManakaKura() {
         .catch((error) => console.error("Service Worker registration failed:", error));
     }
   }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setIsChatOpen(false);
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+
+  useEffect(() => {
+    if (isDarkMode) {
+      document.documentElement.classList.add('dark');
+      localStorage.theme = 'dark';
+    } else {
+      document.documentElement.classList.remove('dark');
+      localStorage.theme = 'light';
+    }
+  }, [isDarkMode]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isInitialized && audioStatus.state === 'transmitting') {
+        // Simulate audio levels for self and others
+        setAudioLevels((prev) => ({
+          ...prev,
+          [currentUser?.username || 'self']: Math.random(),
+          ...Array.from(onlineUsers.keys()).reduce((acc, userId) => {
+            acc[userId] = Math.random() * 0.5;
+            return acc;
+          }, {} as Record<string, number>)
+        }));
+      } else {
+        setAudioLevels({});
+      }
+    }, 200);
+
+    return () => clearInterval(interval);
+  }, [isInitialized, audioStatus.state, currentUser, onlineUsers]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,61 +156,24 @@ export default function ManakaKura() {
           throw new Error(error.error || "Registration failed");
         }
         const { data } = await registerResponse.json();
-        console.log(data.username, "registered successs")
-        user = data.username;
+        console.log(data.username, "registered successs");
+        user = { username: data.username };
         console.log("New user registered:", username);
       } else if (loginResponse.ok) {
         const { data } = await loginResponse.json();
-        console.log(data)
-        user = data.username;
+        console.log(data);
+        user = { username: data.username };
         console.log("User logged in:", username);
       } else {
         const error = await loginResponse.json();
         throw new Error(error.error || "Login failed");
       }
       setCurrentUser(user);
-      await initializeAudio();
-      connectToServer(user);
+      connectToServer(username);
     } catch (err: any) {
       console.error("Login error:", err);
       setLoginError(err.message);
       setIsLoading(false);
-    }
-  };
-
-  const initializeAudio = async () => {
-    try {
-      webrtcRef.current = new WebRTCManager();
-      webrtcRef.current.onConnectionStateChange = (userId, state) => {
-        console.log(`[App] Peer ${userId} state:`, state);
-        updateUserConnectionState(userId, state);
-      };
-      webrtcRef.current.onRemoteStream = (userId, stream, audio) => {
-        console.log(`[App] Receiving audio from:`, userId);
-        setAudioStatusMessage(`Receiving from ${userId}`);
-        setAudioStatusState("receiving");
-      };
-      webrtcRef.current.onError = (error) => {
-        console.error("[App] WebRTC error:", error);
-        setAudioStatusMessage(error.message);
-        setAudioStatusState("error");
-      };
-      webrtcRef.current.onIceCandidate = (userId, candidate) => {
-        sendSignal(userId, { type: "ice-candidate", candidate: candidate.toJSON() });
-      };
-      const success = await webrtcRef.current.initialize();
-      if (success) {
-        setAudioStatusMessage("Microphone ready");
-        setAudioStatusState("ready");
-        console.log("[App] Audio initialized successfully");
-      } else {
-        setAudioStatusMessage("Microphone access denied");
-        setAudioStatusState("error");
-      }
-    } catch (err) {
-      console.error("[App] Failed to initialize audio:", err);
-      setAudioStatusMessage("Audio initialization failed");
-      setAudioStatusState("error");
     }
   };
 
@@ -145,48 +192,28 @@ export default function ManakaKura() {
       setConnectionText("Disconnected");
     });
 
-    // Handle all server messages directly here
     socket.on("message", (payload) => handleServerMessage(payload));
   };
 
   const handleServerMessage = async (message: any) => {
     switch (message.type) {
       case "auth_success":
-        console.log("Authentication successful");
         setIsLoading(false);
-        setCurrentUser({ username: message.username });
         if (message.onlineUsers) {
           const newOnlineUsers = new Map<string, User>();
           for (const user of message.onlineUsers) {
             if (user.userId !== currentUser?.username) {
               newOnlineUsers.set(user.userId, user);
-              // ONLY offer if my name is "greater" than theirs (Tie-breaker)
-              if (message.username > user.userId) {
-                await createWebRTCOffer(user.userId);
-              }
-            }
-          }
-          setOnlineUsers(newOnlineUsers);
-        }
-        if (message.onlineUsers) {
-          const newOnlineUsers = new Map<string, User>();
-          for (const user of message.onlineUsers) {
-            if (user.userId !== currentUser?.username) {
-              newOnlineUsers.set(user.userId, user);
-
-              // TIE BREAKER: One side MUST start. 
-              // If I just logged in and see "okk", and I am "me", 
-              // and "me" > "okk", I send the offer.
-              if (message.username > user.userId) {
-                await createWebRTCOffer(user.userId);
-              }
+              initiateOffer(user.userId);
             }
           }
           setOnlineUsers(newOnlineUsers);
         }
         break;
+
       case "user_joined":
-        console.log("User joined:", message.username);
+        setAnimateJoin(message.userId);
+        setTimeout(() => setAnimateJoin(null), 1000);
         setOnlineUsers((prev) => {
           const newMap = new Map(prev);
           newMap.set(message.userId, {
@@ -196,134 +223,62 @@ export default function ManakaKura() {
           });
           return newMap;
         });
-        if (currentUser && currentUser.username > message.userId) {
-          await createWebRTCOffer(message.userId);
-        }
-        // TIE BREAKER: If "okk" just joined and I am already here.
-        // If my name is "me" and "me" > "okk", I send the offer.
-        if (currentUser && currentUser.username > message.userId) {
-          await createWebRTCOffer(message.userId);
-        }
+        initiateOffer(message.userId);
         break;
+
       case "user_left":
-        console.log("User left:", message.username);
         setOnlineUsers((prev) => {
           const newMap = new Map(prev);
           newMap.delete(message.userId);
           return newMap;
         });
-        webrtcRef.current?.removePeer(message.userId);
         break;
+
+      case "signal":
+        if (message.signal) {
+          await handleSignal(message.fromUserId, message.signal);
+        }
+        break;
+
       case "user_status_changed":
-        console.log("User status changed:", message.userId, message.status);
+        if (message.userId === currentUser?.username) {
+          setUserStatus(message.status);
+        }
         setOnlineUsers((prev) => {
           const newMap = new Map(prev);
           const user = newMap.get(message.userId);
-          if (user) {
-            user.status = message.status;
-          }
+          if (user) user.status = message.status;
           return newMap;
         });
         break;
-      case "signal":
-        console.log("[App] Signal data check:", message.signal); // Look at this log!
-        // If your server sends { type: 'signal', signal: { type: 'offer', ... } }
-        // You need to pass message.signal
-        if (message.signal) {
-          await handleWebRTCSignal(message.fromUserId, message.signal);
+
+      case "chat_message":
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: crypto.randomUUID(),
+            userId: message.fromUserId,
+            content: message.content,
+            timestamp: new Date(),
+          },
+        ]);
+        if (chatRef.current) {
+          chatRef.current.scrollTop = chatRef.current.scrollHeight;
         }
         break;
-      case "error":
-        console.error("Server error:", message.error);
-        setLoginError(message.error);
+
+      case "typing_start":
+        setTypingUsers((prev) => new Set(prev).add(message.userId));
         break;
-      default:
-        console.log("Unknown server message:", message);
+
+      case "typing_stop":
+        setTypingUsers((prev) => {
+          const next = new Set(prev);
+          next.delete(message.userId);
+          return next;
+        });
+        break;
     }
-  };
-
-  const createWebRTCOffer = async (userId: string) => {
-    if (!webrtcRef.current) return;
-    try {
-      console.log("[App] Creating WebRTC offer for:", userId);
-      const offer = await webrtcRef.current.createOffer(userId);
-      sendSignal(userId, { type: "offer", offer });
-    } catch (err) {
-      console.error("[App] Failed to create offer:", err);
-    }
-  };
-
-  const handleWebRTCSignal = async (fromUserId: string, signal: any) => {
-    if (!webrtcRef.current) return;
-    try {
-      switch (signal.type) {
-        case "offer":
-          console.log("[App] Received offer from:", fromUserId);
-          const answer = await webrtcRef.current.handleOffer(fromUserId, signal.offer);
-          sendSignal(fromUserId, { type: "answer", answer });
-          break;
-        case "answer":
-          console.log("[App] Received answer from:", fromUserId);
-          await webrtcRef.current.handleAnswer(fromUserId, signal.answer);
-          break;
-        case "ice-candidate":
-          console.log("[App] Received ICE candidate from:", fromUserId);
-          await webrtcRef.current.handleIceCandidate(fromUserId, signal.candidate);
-          break;
-        default:
-          console.log("[App] Unknown signal type:", signal);
-      }
-    } catch (err) {
-      console.error("[App] Error handling signal:", err);
-    }
-  };
-
-  const sendSignal = (targetUserId: string, signal: any) => {
-    socketRef.current?.emit("message", {
-      type: "signal",
-      targetUserId,
-      signal
-    });
-  };
-
-  const startPTT = () => {
-    console.log("Attempting to start PTT...");
-    if (!webrtcRef.current) {
-      console.error("WebRTC Manager not initialized!");
-      return;
-    }
-    if (isPTTPressed || !webrtcRef.current) return;
-    console.log("[App] PTT pressed");
-    setIsPTTPressed(true);
-    webrtcRef.current.startTransmitting();
-    setAudioStatusMessage("Transmitting...");
-    setAudioStatusState("transmitting");
-    if (navigator.vibrate) navigator.vibrate(50);
-  };
-
-  const stopPTT = () => {
-    if (!isPTTPressed || !webrtcRef.current) return;
-    console.log("[App] PTT released");
-    setIsPTTPressed(false);
-    webrtcRef.current.stopTransmitting();
-    setAudioStatusMessage("Ready");
-    setAudioStatusState("ready");
-    if (navigator.vibrate) navigator.vibrate(30);
-  };
-
-  const updateUserConnectionState = (userId: string, state: string) => {
-    setOnlineUsers((prev) => {
-      const newMap = new Map(prev);
-      const user = newMap.get(userId);
-      if (user) {
-        user.connectionState = state;
-      }
-      return newMap;
-    });
-    if (state === "connected" && audioStatusState !== "transmitting") {
-    setAudioStatusState("ready");
-    setAudioStatusMessage("Microphone ready");
-  }
   };
 
   const changeStatus = (status: "online" | "busy" | "away") => {
@@ -341,193 +296,327 @@ export default function ManakaKura() {
       socket.disconnect();
       socketRef.current = null;
     }
-    if (webrtcRef.current) {
-      webrtcRef.current.cleanup();
-      webrtcRef.current = null;
-    }
     setOnlineUsers(new Map());
     setCurrentUser(null);
     setUserStatus("online");
-    setIsPTTPressed(false);
     setLoginError("");
+    setMessages([]);
   };
 
-  const togglePTT = () => {
-  if (!webrtcRef.current || audioStatusState === "error") return;
+  const togglePTT = (e: React.PointerEvent) => {
+    if (audioStatus.state === "error") return;
 
-  if (!isPTTPressed) {
-    // START TRANSMITTING
-    console.log("[App] PTT Toggle: ON");
-    setIsPTTPressed(true);
-    webrtcRef.current.startTransmitting();
-    setAudioStatusMessage("Transmitting...");
-    setAudioStatusState("transmitting");
-    if (navigator.vibrate) navigator.vibrate(50);
-  } else {
-    // STOP TRANSMITTING
-    console.log("[App] PTT Toggle: OFF");
-    setIsPTTPressed(false);
-    webrtcRef.current.stopTransmitting();
-    setAudioStatusMessage("Ready");
-    setAudioStatusState("ready");
-    if (navigator.vibrate) navigator.vibrate([30, 30]); // Double pulse for "off"
-  }
-};
+    if (e.type === 'pointerdown') {
+      console.log("[App] PTT Toggle: ON");
+      startTalking();
+      if (navigator.vibrate) navigator.vibrate(50);
+    } else if (e.type === 'pointerup' || e.type === 'pointerleave' || e.type === 'pointercancel') {
+      console.log("[App] PTT Toggle: OFF");
+      stopTalking();
+      if (navigator.vibrate) navigator.vibrate([30, 30]);
+    }
+  };
+
+  const sendMessage = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newMessage.trim() || !socketRef.current) return;
+
+    socketRef.current.emit("message", {
+      type: "chat_message",
+      content: newMessage,
+    });
+
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        userId: currentUser?.username || "",
+        content: newMessage,
+        timestamp: new Date(),
+      },
+    ]);
+    setNewMessage("");
+    if (chatRef.current) {
+      chatRef.current.scrollTop = chatRef.current.scrollHeight;
+    }
+  };
+
+  const toggleChat = () => {
+    setIsChatOpen((prev) => !prev);
+  };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-gradient-to-br from-[var(--bg-primary)] to-[var(--bg-secondary)] touch-none select-none">
       {!currentUser ? (
-        <div className="flex-1 flex items-center justify-center p-4">
-          <Card className="w-full max-w-md bg-[var(--bg-secondary)] border-none shadow-lg">
+        <div className="flex-1 flex items-center justify-center p-4 sm:p-8">
+          <Card className="w-full max-w-md bg-[var(--bg-secondary)]/90 backdrop-blur-lg border-none shadow-2xl rounded-[var(--radius-2xl)] animate-fade-in">
             <CardHeader className="text-center">
-              <div className="mx-auto mb-4 animate-pulse">
-                <Radio className="w-20 h-20 text-[var(--accent)]" />
+              <div className="mx-auto mb-6 animate-glow">
+                <Radio className="w-24 h-24 text-[var(--accent)]" />
               </div>
-              <CardTitle className="text-2xl font-bold">Manaka Kura</CardTitle>
-              <p className="text-[var(--text-secondary)]">Everywhere, Every time</p>
+              <CardTitle className="text-4xl font-extrabold animate-glow">Manaka Kura</CardTitle>
+              <p className="text-[var(--text-secondary)] mt-3 text-lg">Seamless Connections, Infinite Conversations</p>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-6">
               <form onSubmit={handleLogin} className="space-y-4">
                 <Input
                   ref={usernameInputRef}
                   type="text"
-                  placeholder="Enter your handle"
-                  className="bg-[var(--bg-tertiary)] border-none text-[var(--text-primary)] placeholder-[var(--text-secondary)]"
+                  placeholder="Choose your handle"
+                  className="bg-[var(--bg-tertiary)]/60 border border-[var(--border)]/30 text-[var(--text-primary)] placeholder-[var(--text-secondary)] rounded-[var(--radius-lg)] focus:ring-[var(--ring)] transition-all duration-300 hover:border-[var(--accent)]/50"
                 />
-                <Button type="submit" className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--bg-primary)]">
-                  Connect
+                <Button type="submit" className="w-full bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-[var(--bg-primary)] rounded-[var(--radius-lg)] transition-all duration-300 hover:shadow-[0_0_25px_rgba(var(--accent-rgb),0.6)] hover:scale-105">
+                  Join the Wave
                 </Button>
               </form>
-              {loginError && <p className="mt-2 text-[var(--danger)] text-center">{loginError}</p>}
-              <p className="mt-4 text-[var(--text-secondary)] text-center text-sm">
-                New user? Just enter a handle to create your account.
+              {loginError && <p className="text-[var(--danger)] text-center animate-bounce">{loginError}</p>}
+              <p className="text-[var(--text-secondary)] text-center text-base">
+                Dive in – your voice awaits!
               </p>
             </CardContent>
           </Card>
         </div>
       ) : (
         <>
-          <header className="bg-[var(--bg-secondary)] p-4 flex justify-between items-center shadow-md sticky top-0 z-50">
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-2 bg-[var(--bg-tertiary)] px-4 py-2 rounded-full">
-                <div className={`w-2.5 h-2.5 rounded-full status-indicator ${userStatus}`}></div>
-                <span className="font-semibold">{currentUser.username}</span>
+          <header className="bg-[var(--bg-secondary)]/90 backdrop-blur-xl p-4 sm:p-6 flex justify-between items-center shadow-xl sticky top-0 z-50">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-3 bg-[var(--bg-tertiary)]/60 px-5 py-3 rounded-full backdrop-blur-md shadow-md">
+                <div className={`w-3.5 h-3.5 rounded-full status-indicator animate-pulse-border ${userStatus}`}></div>
+                <span className="font-bold text-lg animate-glow">{currentUser.username}</span>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-4 items-center">
+              <Switch
+                checked={isDarkMode}
+                onCheckedChange={setIsDarkMode}
+                className="data-[state=checked]:bg-[var(--accent)]"
+              />
+              {isDarkMode ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
               <Dialog open={isStatusModalOpen} onOpenChange={setIsStatusModalOpen}>
                 <DialogTrigger asChild>
-                  <Button variant="ghost" className="p-2">
-                    <Signal className="w-6 h-6" />
+                  <Button variant="ghost" className="p-3 hover:bg-[var(--bg-tertiary)]/50 rounded-full transition-all hover:scale-110">
+                    <Signal className="w-6 h-6 text-[var(--accent)]" />
                   </Button>
                 </DialogTrigger>
-                <DialogContent className="bg-[var(--bg-secondary)] border-none">
+                <DialogContent className="bg-[var(--bg-secondary)]/95 backdrop-blur-xl border-none rounded-[var(--radius-2xl)] shadow-2xl">
                   <DialogHeader>
-                    <DialogTitle>Change Status</DialogTitle>
+                    <DialogTitle className="text-[var(--text-primary)] text-2xl">Set Your Vibe</DialogTitle>
                   </DialogHeader>
-                  <div className="space-y-3">
-                    <Button onClick={() => changeStatus("online")} className="w-full justify-start gap-2">
-                      <div className="w-4 h-4 rounded-full status-indicator online"></div>
+                  <div className="space-y-4">
+                    <Button onClick={() => changeStatus("online")} className="w-full justify-start gap-4 bg-[var(--bg-tertiary)]/50 hover:bg-[var(--accent-hover)]/30 rounded-[var(--radius-lg)] transition-all hover:scale-105">
+                      <div className="w-5 h-5 rounded-full status-indicator online animate-pulse"></div>
                       Online
                     </Button>
-                    <Button onClick={() => changeStatus("busy")} className="w-full justify-start gap-2">
-                      <div className="w-4 h-4 rounded-full status-indicator busy"></div>
+                    <Button onClick={() => changeStatus("busy")} className="w-full justify-start gap-4 bg-[var(--bg-tertiary)]/50 hover:bg-[var(--accent-hover)]/30 rounded-[var(--radius-lg)] transition-all hover:scale-105">
+                      <div className="w-5 h-5 rounded-full status-indicator busy animate-pulse"></div>
                       Busy
                     </Button>
-                    <Button onClick={() => changeStatus("away")} className="w-full justify-start gap-2">
-                      <div className="w-4 h-4 rounded-full status-indicator away"></div>
+                    <Button onClick={() => changeStatus("away")} className="w-full justify-start gap-4 bg-[var(--bg-tertiary)]/50 hover:bg-[var(--accent-hover)]/30 rounded-[var(--radius-lg)] transition-all hover:scale-105">
+                      <div className="w-5 h-5 rounded-full status-indicator away animate-pulse"></div>
                       Away
                     </Button>
                   </div>
                 </DialogContent>
               </Dialog>
-              <Button variant="ghost" onClick={handleDisconnect} className="p-2">
-                <LogOut className="w-6 h-6" />
+              <Button variant="ghost" onClick={handleDisconnect} className="p-3 hover:bg-[var(--bg-tertiary)]/50 rounded-full transition-all hover:scale-110">
+                <LogOut className="w-6 h-6 text-[var(--danger)]" />
               </Button>
             </div>
           </header>
-          <main className="flex-1 p-4 max-w-2xl mx-auto w-full">
-            <div className={cn("flex items-center gap-2 p-3 bg-[var(--bg-secondary)] rounded-lg mb-5", !isConnected && "text-[var(--danger)]")}>
-              <div className={cn("w-2 h-2 rounded-full", isConnected ? "bg-[var(--status-online)] animate-blink" : "bg-[var(--danger)]")}></div>
-              <span>{connectionText}</span>
+          <main className="flex-1 p-6 sm:p-8 max-w-full mx-auto w-full space-y-8">
+            <div className={cn("flex items-center gap-4 p-5 bg-[var(--bg-secondary)]/90 backdrop-blur-md rounded-[var(--radius-xl)] shadow-lg", !isConnected && "text-[var(--danger)]")}>
+              <div className={cn("w-4 h-4 rounded-full", isConnected ? "bg-[var(--status-online)] animate-blink" : "bg-[var(--danger)]")}></div>
+              <span className="font-semibold text-lg">{connectionText}</span>
             </div>
-            <div className={cn("p-3 rounded-lg mb-5 text-center font-medium border-2", `audio-status ${audioStatusState}`)}>
-              {audioStatusMessage}
+            <div className={cn("p-5 rounded-[var(--radius-xl)] text-center font-bold text-lg border-2 shadow-xl", `audio-status ${audioStatus.state}`)}>
+              {audioStatus.message}
             </div>
-            <section className="mb-5">
-              <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-                Online Users <Badge className="bg-[var(--accent)] text-[var(--bg-primary)]">{onlineUsers.size}</Badge>
+            <section>
+              <h2 className="text-2xl font-extrabold mb-6 flex items-center gap-4">
+                Active Voices <Badge className="bg-[var(--accent)] text-[var(--bg-primary)] rounded-full px-4 py-1 text-base">{onlineUsers.size}</Badge>
               </h2>
-              <div className="space-y-3">
+              <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {onlineUsers.size === 0 ? (
-                  <div className="text-center p-10 text-[var(--text-secondary)]">
-                    <p>No other users online</p>
-                    <p className="text-xs mt-2">You're the first one here!</p>
+                  <div className="col-span-full text-center py-16 text-[var(--text-secondary)] animate-pulse text-xl">
+                    <p>Silence in the air...</p>
+                    <p className="text-base mt-3">Summon your squad!</p>
                   </div>
                 ) : (
                   Array.from(onlineUsers.values()).map((user) => (
                     <Card
                       key={user.userId}
                       className={cn(
-                        "bg-[var(--bg-secondary)] border-none hover:bg-[var(--bg-tertiary)] transition-all cursor-pointer",
-                        user.connectionState === "connected" && "border-l-4 border-[var(--success)]"
+                        "user-card bg-[var(--bg-secondary)]/90 backdrop-blur-lg border-none rounded-[var(--radius-xl)] shadow-xl hover:shadow-[0_0_30px_rgba(var(--accent-rgb),0.4)]",
+                        user.connectionState === "connected" && "border-l-8 border-[var(--success)]",
+                        animateJoin === user.userId && "animate-user-join"
                       )}
                     >
-                      <CardContent className="p-4 flex items-center justify-between">
-                        <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-[var(--bg-tertiary)] flex items-center justify-center text-[var(--accent)] font-bold relative">
-                            {user.username.charAt(0).toUpperCase()}
-                            <div className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-[var(--bg-secondary)] status-indicator ${user.status}`}></div>
-                            {user.connectionState === "connected" && (
-                              <div className="absolute top-[-0.5rem] right-[-0.5rem] w-4 h-4 bg-[var(--accent)] rounded-full border-2 border-[var(--bg-secondary)] animate-pulse-audio"></div>
-                            )}
-                          </div>
-                          <div>
-                            <p className="font-semibold">{user.username}</p>
-                            <p className="text-xs text-[var(--text-secondary)] capitalize">{user.status}</p>
-                            {user.connectionState === "connected" && (
-                              <p className="text-xs text-[var(--success)] uppercase font-semibold">Audio Ready</p>
-                            )}
-                          </div>
+                      <CardContent className="p-6 flex flex-col items-center text-center">
+                        <div className="w-16 h-16 rounded-full bg-gradient-to-br from-[var(--bg-tertiary)] to-[var(--bg-secondary)] flex items-center justify-center text-[var(--accent)] font-extrabold text-3xl relative shadow-2xl mb-4">
+                          {user.username.charAt(0).toUpperCase()}
+                          <div className={`absolute bottom-0 right-0 w-5 h-5 rounded-full border-2 border-[var(--bg-secondary)] status-indicator animate-pulse-border ${user.status}`}></div>
+                          {user.connectionState === "connected" && (
+                            <div className="absolute -top-2 -right-2 w-6 h-6 bg-[var(--accent)] rounded-full border-2 border-[var(--bg-secondary)] animate-pulse-audio"></div>
+                          )}
                         </div>
+                        <p className="font-semibold text-xl mb-1">{user.username}</p>
+                        <p className="text-sm text-[var(--text-secondary)] capitalize mb-3">{user.status}</p>
+                        {user.connectionState === "connected" && (
+                          <div className="flex gap-1 h-6">
+                            {Array.from({ length: 5 }).map((_, i) => (
+                              <div
+                                key={i}
+                                className="audio-wave-bar"
+                                style={{
+                                  height: `${Math.random() * 100}%`,
+                                  animationDelay: `${i * 0.2}s`,
+                                  opacity: audioLevels[user.userId] || 0,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   ))
                 )}
               </div>
             </section>
-            <div className="mt-10 flex flex-col items-center gap-4">
-  <p className="text-[var(--text-secondary)] font-medium">
-    {isPTTPressed ? "Tap to Stop" : "Tap to Talk"}
-  </p>
-  
-  <Button
-    onClick={togglePTT}
-    disabled={audioStatusState === "receiving" || audioStatusState === "error"}
-    className={cn(
-      "w-40 h-40 rounded-full bg-[var(--bg-secondary)] border-4 border-[var(--accent)] flex flex-col items-center justify-center gap-3 text-[var(--accent)] transition-all",
-      isPTTPressed ? "bg-[var(--accent)] text-[var(--bg-primary)] scale-105 border-white shadow-[0_0_20px_rgba(var(--accent-rgb),0.5)]" : "hover:scale-105"
-    )}
-  >
-    {/* Use a Pulse icon or Mic icon based on state */}
-    <Mic className={cn("w-12 h-12", isPTTPressed && "animate-pulse")} />
-    <span className="text-xs font-bold uppercase tracking-widest">
-      {isPTTPressed ? "LIVE" : "PUSH TO TALK"}
-    </span>
-  </Button>
+            <div className="mt-12 flex flex-col items-center gap-6">
+              <p className="text-[var(--text-secondary)] font-semibold text-xl">
+                {audioStatus.state === "transmitting" ? "Release to Silence" : "Hold to Broadcast"}
+              </p>
 
-  {/* Status indicators */}
-  <p className="text-[var(--text-secondary)] text-xs flex items-center gap-2 opacity-70">
-    <Signal className={cn("w-4 h-4", isPTTPressed ? "text-[var(--success)]" : "opacity-50")} />
-    {isPTTPressed ? "Channel Open" : "Channel Standby"}
-  </p>
-</div>
+              <Button
+                onPointerDown={togglePTT}
+                onPointerUp={togglePTT}
+                onPointerLeave={togglePTT}
+                onPointerCancel={togglePTT}
+                disabled={audioStatus.state === "receiving" || audioStatus.state === "error"}
+                className={cn(
+                  "ptt-button w-52 h-52 sm:w-60 sm:h-60 rounded-full bg-[var(--bg-secondary)] border-8 border-[var(--accent)] flex flex-col items-center justify-center gap-5 text-[var(--accent)] transition-all duration-300 shadow-2xl",
+                  audioStatus.state === "transmitting" ? "bg-[var(--accent)] text-[var(--bg-primary)] scale-110 border-[var(--accent-hover)] shadow-[0_0_40px_rgba(var(--accent-rgb),0.8)] animate-transmit-pulse" : "hover:scale-105 hover:shadow-[0_0_30px_rgba(var(--accent-rgb),0.6)]"
+                )}
+              >
+                <Mic className={cn("w-20 h-20 sm:w-24 sm:h-24", audioStatus.state === "transmitting" && "animate-pulse")} />
+                <span className="text-base sm:text-lg font-extrabold uppercase tracking-widest">
+                  {audioStatus.state === "transmitting" ? "BROADCASTING" : "HOLD TO TALK"}
+                </span>
+              </Button>
+
+              <div className="flex items-center gap-4 mt-4">
+                <Volume2 className="w-6 h-6 text-[var(--accent)]" />
+                <Slider
+                  value={[globalVolume * 100]}
+                  onValueChange={(value) => setGlobalVolume(value[0] / 100)}
+                  max={100}
+                  step={1}
+                  className="w-40 sm:w-48"
+                />
+              </div>
+
+              <p className="text-[var(--text-secondary)] text-base flex items-center gap-3 opacity-80 animate-glow">
+                <Signal className={cn("w-6 h-6", audioStatus.state === "transmitting" ? "text-[var(--success)] animate-spin" : "opacity-60")} />
+                {audioStatus.state === "transmitting" ? "Waves in Motion" : "Awaiting Your Voice"}
+              </p>
+            </div>
+
+            <Button
+              onClick={toggleChat}
+              className="fixed bottom-6 right-6 bg-[var(--accent)] text-[var(--bg-primary)] rounded-full p-4 shadow-2xl hover:scale-110 transition-all animate-bounce"
+            >
+              <MessageSquare className="w-8 h-8" />
+            </Button>
+
+            {isChatOpen && (
+              <div
+                className="fixed inset-0 z-40 flex bg-black/40 backdrop-blur-sm"
+                onClick={() => setIsChatOpen(false)}
+              >
+                {/* Chat Drawer */}
+                <div
+                  className="ml-auto w-full sm:w-[420px] h-full bg-[var(--bg-secondary)] shadow-2xl animate-slide-in flex flex-col"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between p-5 border-b border-[var(--border)]/30">
+                    <h2 className="text-xl font-bold">Channel Chat</h2>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setIsChatOpen(false)}
+                      className="hover:scale-105 transition"
+                    >
+                      <ArrowLeft className="w-5 h-5" />
+                    </Button>
+                  </div>
+
+                  {/* Messages */}
+                  <div
+                    ref={chatRef}
+                    className="flex-1 overflow-y-auto p-5 space-y-4"
+                  >
+                    {messages.map((msg) => (
+                      <div
+                        key={msg.id}
+                        className={cn(
+                          "p-3 rounded-[var(--radius-lg)] max-w-[80%] shadow-sm",
+                          msg.userId === currentUser?.username
+                            ? "bg-[var(--accent)]/30 ml-auto"
+                            : "bg-[var(--bg-tertiary)]/80"
+                        )}
+                      >
+                        <p className="text-sm font-semibold">{msg.userId}</p>
+                        <p>{msg.content}</p>
+                        <p className="text-xs opacity-60 mt-1">
+                          {msg.timestamp.toLocaleTimeString()}
+                        </p>
+                      </div>
+                    ))}
+
+                    {/* Typing indicator */}
+                    {typingUsers.size > 0 && (
+                      <div className="text-xs text-[var(--text-secondary)] animate-pulse">
+                        {[...typingUsers].join(", ")} typing…
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Input */}
+                  <form
+                    onSubmit={sendMessage}
+                    className="p-4 border-t border-[var(--border)]/30 flex gap-2"
+                  >
+                    <Textarea
+                      value={newMessage}
+                      onChange={(e) => {
+                        setNewMessage(e.target.value);
+
+                        socketRef.current?.emit("message", { type: "typing_start" });
+
+                        if (typingTimeoutRef.current) {
+                          clearTimeout(typingTimeoutRef.current);
+                        }
+
+                        typingTimeoutRef.current = setTimeout(() => {
+                          socketRef.current?.emit("message", { type: "typing_stop" });
+                        }, 800);
+                      }}
+                      placeholder="Type your message..."
+                      className="flex-1 bg-[var(--bg-tertiary)]/60 border-none rounded-[var(--radius-lg)]"
+                    />
+                    <Button type="submit" className="bg-[var(--accent)]">
+                      Send
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            )}
           </main>
         </>
       )}
       {isLoading && (
-        <div className="fixed inset-0 bg-[rgba(15,15,30,0.95)] flex items-center justify-center z-50">
-          <Loader2 className="w-12 h-12 text-[var(--accent)] animate-spin" />
+        <div className="fixed inset-0 bg-[var(--bg-primary)]/98 flex items-center justify-center z-50">
+          <Loader2 className="w-20 h-20 text-[var(--accent)] animate-spin" />
         </div>
       )}
     </div>
