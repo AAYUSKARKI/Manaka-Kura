@@ -4,8 +4,8 @@ const RUNTIME_CACHE = 'ptt-runtime';
 
 // Assets to cache immediately
 const PRECACHE_ASSETS = [
-  '/',
-  '/index.html',
+  // '/',
+  // '/index.html',
   // '/css/styles.css',
   // '/js/main.js',
   // '/workers/ws-worker.js',
