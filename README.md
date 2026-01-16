@@ -38,6 +38,19 @@ To ensure low latency without sacrificing security, the backend implements a lay
 - **Layer 3: Decoupled Handlers:** Business logic is separated into standalone handlers (Auth, Signal, Status) for easier testing and scalability.
 - **Layer 4: Signaling Relay:** Robust WebRTC signaling with validation for SDP and ICE candidates.
 
+### Frontend Architecture
+- **WebRTC Engine:** Custom `WebRTCManager` class handling PeerConnection lifecycle.
+- **PTT Logic:** Local stream muting/unmuting for instant Push-to-Talk.
+- **Audio Analysis:** Real-time frequency analysis for voice activity visualization.
+
+### ⚛️ Reactive Signaling Hook (`useWebRTC`)
+The frontend uses a custom hook to manage the intersection of WebSockets and WebRTC:
+
+- **Auto-Handshake:** Automatically creates WebRTC offers when a `user_joined` event is received.
+- **Signaling Relay:** Maps incoming socket signals (SDP/ICE) to the correct peer connection.
+- **PTT Lifecycle:** Manages microphone stream states and updates global user status (Online/Busy) via the backend.
+- **Visualizer Engine:** Provides a reactive `audioLevel` state for real-time UI pulsing effects.
+
 ---
 ## 📥 Getting Started
 
