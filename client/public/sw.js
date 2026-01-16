@@ -1,6 +1,6 @@
 // Service Worker for PTT System
-const CACHE_NAME = 'ptt-v1.0.0';
-const RUNTIME_CACHE = 'ptt-runtime';
+const CACHE_NAME = 'manaka-kura-v1.0.1';
+const RUNTIME_CACHE = 'manaka-kura-runtime';
 
 // Assets to cache immediately
 const PRECACHE_ASSETS = [
@@ -87,7 +87,19 @@ self.addEventListener('fetch', (event) => {
     );
     return;
   }
-
+if (request.mode === 'navigate') {
+    event.respondWith(
+      fetch(request)
+        .then(response => {
+          // Update the cache with the fresh index.html
+          const copy = response.clone();
+          caches.open(RUNTIME_CACHE).then(cache => cache.put(request, copy));
+          return response;
+        })
+        .catch(() => caches.match(request)) // Fallback to cache ONLY if offline
+    );
+    return;
+  }
   // For static assets: Cache-first strategy
   event.respondWith(
     caches.match(request)
