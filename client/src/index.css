@@ -4,6 +4,12 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
+  /* Add this line here */
+  --animate-transmit-pulse: transmit-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  
+  /* You can also map your other custom animations while you're at it */
+  --animate-user-join: user-join 0.3s ease-out;
+  --animate-ripple: ripple 0.6s linear;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -77,6 +83,18 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  --bg-primary: hsl(0, 0%, 98%);
+  --bg-secondary: hsl(0, 0%, 95%);
+  --bg-tertiary: hsl(0, 0%, 90%);
+  --text-primary: hsl(0, 0%, 10%);
+  --text-secondary: hsl(0, 0%, 40%);
+  --accent: hsl(190, 90%, 50%);
+  --accent-hover: hsl(190, 90%, 60%);
+  --accent-rgb: 0, 217, 255;
+  --success: hsl(150, 80%, 40%);
+  --warning: hsl(40, 80%, 50%);
+  --danger: hsl(0, 80%, 50%);
+  --status-online: hsl(150, 80%, 40%);
 }
 
 .dark {
@@ -111,6 +129,18 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  --bg-primary: hsl(220, 25%, 10%);
+  --bg-secondary: hsl(220, 20%, 15%);
+  --bg-tertiary: hsl(220, 20%, 20%);
+  --text-primary: hsl(0, 0%, 95%);
+  --text-secondary: hsl(0, 0%, 70%);
+  --accent: hsl(190, 90%, 50%);
+  --accent-hover: hsl(190, 90%, 60%);
+  --accent-rgb: 0, 217, 255;
+  --success: hsl(150, 80%, 40%);
+  --warning: hsl(40, 80%, 50%);
+  --danger: hsl(0, 80%, 50%);
+  --status-online: hsl(150, 80%, 40%);
 }
 
 @layer base {
@@ -120,4 +150,195 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+body {
+  background: linear-gradient(135deg, var(--bg-primary) 0%, var(--bg-secondary) 100%);
+  color: var(--text-primary);
+  touch-action: manipulation;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+@keyframes pulse-border {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; }
+  50% { box-shadow: 0 0 20px 5px currentColor; }
+}
+
+@keyframes pulse-audio {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 0.7;
+  }
+}
+
+@keyframes transmit-pulse {
+  0%, 100% {
+    box-shadow: 0 0 60px rgba(var(--accent-rgb), 0.8);
+  }
+  50% {
+    box-shadow: 0 0 80px rgba(var(--accent-rgb), 1);
+  }
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes ripple {
+  0% {
+    transform: scale(0.8);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+
+@keyframes glow {
+  0%, 100% {
+    text-shadow: 0 0 5px rgba(var(--accent-rgb), 0.5);
+  }
+  50% {
+    text-shadow: 0 0 20px rgba(var(--accent-rgb), 1);
+  }
+}
+
+@keyframes user-join {
+  0% {
+    transform: translateY(20px) scale(0.95);
+    opacity: 0;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes wave {
+  0%, 100% { transform: scaleY(0.5); }
+  50% { transform: scaleY(1); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-5px); }
+}
+
+.status-indicator {
+  box-shadow: 0 0 10px currentColor;
+}
+
+.audio-status.ready {
+  border-color: var(--success);
+  color: var(--success);
+  background: rgba(0, 255, 136, 0.1);
+}
+
+.audio-status.transmitting {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: rgba(var(--accent-rgb), 0.2);
+  @apply animate-transmit-pulse;
+}
+
+.audio-status.receiving {
+  border-color: var(--warning);
+  color: var(--warning);
+  background: rgba(255, 170, 0, 0.1);
+  @apply animate-pulse;
+}
+
+.audio-status.error {
+  border-color: var(--danger);
+  color: var(--danger);
+  background: rgba(255, 68, 102, 0.1);
+}
+
+.user-card {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.user-card:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 4px 20px rgba(var(--accent-rgb), 0.3);
+}
+
+.ptt-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.ptt-button::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 0;
+  height: 0;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 50%;
+  opacity: 0;
+  transition: width 0.3s ease, height 0.3s ease, opacity 0.3s ease;
+}
+
+.ptt-button:active::before {
+  width: 200%;
+  height: 200%;
+  opacity: 1;
+}
+
+.audio-wave-bar {
+  width: 4px;
+  background: var(--accent);
+  border-radius: 9999px;
+  animation: wave 1s infinite ease-in-out;
+}
+
+.online { background-color: var(--status-online); }
+.busy { background-color: var(--warning); }
+.away { background-color: var(--danger); }
+
+@media (max-width: 640px) {
+  .user-card {
+    @apply rounded-[var(--radius-md)];
+  }
+  
+  .ptt-button {
+    @apply w-44 h-44;
+  }
+}
+
+@keyframes slide-in {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+.animate-slide-in {
+  animation: slide-in 0.3s ease-out;
 }
