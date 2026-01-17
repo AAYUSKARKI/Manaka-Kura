@@ -1,4 +1,11 @@
-import type { WebRTCError, WebRTCConfig, ExtendedRTCPeerConnection } from "@/types/webRTC";
+import type { WebRTCConfig, WebRTCError } from "@/types/webRTC";
+
+interface ExtendedRTCPeerConnection extends RTCPeerConnection {
+  remoteAudio?: HTMLAudioElement;
+  remoteAudioContext?: AudioContext;
+  remoteAnalyser?: AnalyserNode;
+}
+
 export class WebRTCManager {
     private peers: Map<string, ExtendedRTCPeerConnection>;
     private localStream: MediaStream | null;
@@ -8,11 +15,11 @@ export class WebRTCManager {
     public isMuted: boolean;
     public isTransmitting: boolean;
 
-    // Event Callbacks
     public onConnectionStateChange: ((userId: string, state: RTCPeerConnectionState) => void) | null = null;
     public onRemoteStream: ((userId: string, stream: MediaStream, audio: HTMLAudioElement) => void) | null = null;
     public onIceCandidate: ((userId: string, candidate: RTCIceCandidate) => void) | null = null;
     public onError: ((error: WebRTCError) => void) | null = null;
+
     constructor() {
         this.peers = new Map(); // Map<userId, RTCPeerConnection>
         this.localStream = null;
@@ -76,15 +83,20 @@ export class WebRTCManager {
      * Create peer connection for a user
      */
     createPeerConnection(userId: string): ExtendedRTCPeerConnection {
-        const existingPc = this.peers.get(userId);
-        if (existingPc) return existingPc;
+        if (this.peers.has(userId)) {
+            console.log('[WebRTC] Peer connection already exists for:', userId);
+            return this.peers.get(userId)!;
+        }
 
         console.log('[WebRTC] Creating peer connection for:', userId);
-        const pc: ExtendedRTCPeerConnection = new RTCPeerConnection(this.config);
 
+        const pc = new RTCPeerConnection(this.config) as ExtendedRTCPeerConnection;
+
+        // Add local stream tracks
         if (this.localStream) {
-            this.localStream.getTracks().forEach(track => {
-                pc.addTrack(track, this.localStream!);
+            const stream = this.localStream; // Create a local reference for narrowing
+            stream.getTracks().forEach(track => {
+                pc.addTrack(track, stream);
             });
         }
 
@@ -122,11 +134,21 @@ export class WebRTCManager {
                 const audio = new Audio();
                 audio.srcObject = remoteStream;
                 audio.autoplay = true;
-                // @ts-ignore - playsinline is not in all lib.dom versions but needed for mobile Safari
-                audio.playsinline = true;
+                // @ts-ignore
+                audio.playsinline = true; // Important for iOS
 
                 // Store audio element with peer
                 pc.remoteAudio = audio;
+
+                // Setup analyser for remote audio level
+                const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+                const ctx = new AudioContextClass();
+                const source = ctx.createMediaStreamSource(remoteStream);
+                const analyser = ctx.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+                pc.remoteAudioContext = ctx;
+                pc.remoteAnalyser = analyser;
 
                 if (this.onRemoteStream) {
                     this.onRemoteStream(userId, remoteStream, audio);
@@ -146,9 +168,14 @@ export class WebRTCManager {
     /**
      * Create and send offer to peer
      */
-    async createOffer(userId: string): Promise<RTCSessionDescriptionInit> {
+    async createOffer(userId: string) {
         try {
             const pc = this.createPeerConnection(userId);
+
+            if (pc.signalingState !== 'stable') {
+                console.warn('[WebRTC] Signaling not stable, skipping offer for:', userId);
+                return;
+            }
 
             console.log('[WebRTC] Creating offer for:', userId);
             const offer = await pc.createOffer();
@@ -164,7 +191,7 @@ export class WebRTCManager {
     /**
      * Handle received offer
      */
-    async handleOffer(userId: string, offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit> {
+    async handleOffer(userId: string, offer: RTCSessionDescriptionInit) {
         try {
             const pc = this.createPeerConnection(userId);
 
@@ -184,7 +211,7 @@ export class WebRTCManager {
     /**
      * Handle received answer
      */
-    async handleAnswer(userId: string, answer: RTCSessionDescriptionInit): Promise<void> {
+    async handleAnswer(userId: string, answer: RTCSessionDescriptionInit) {
         try {
             const pc = this.peers.get(userId);
             if (!pc) {
@@ -193,41 +220,16 @@ export class WebRTCManager {
             }
 
             console.log('[WebRTC] Handling answer from:', userId);
-            if (pc.signalingState === 'stable') {
-                console.log('[WebRTC] Connection already stable, ignoring duplicate answer');
-                return;
-            }
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
         } catch (err) {
             console.error('[WebRTC] Failed to handle answer:', err);
-            throw err;
         }
-    }
-
-    /**
-     * Get connection stats for all peers
-     */
-    async getConnectionStats() {
-        const qualityMap: Record<string, string> = {};
-
-        for (const [userId, pc] of this.peers.entries()) {
-            const stats = await pc.getStats();
-            stats.forEach(report => {
-                if (report.type === 'remote-inbound-rtp') {
-                    const roundTripTime = report.roundTripTime; // in seconds
-                    if (roundTripTime > 0.3) qualityMap[userId] = "poor";
-                    else if (roundTripTime > 0.1) qualityMap[userId] = "fair";
-                    else qualityMap[userId] = "excellent";
-                }
-            });
-        }
-        return qualityMap;
     }
 
     /**
      * Handle received ICE candidate
      */
-    async handleIceCandidate(userId: string, candidate: RTCIceCandidateInit): Promise<void> {
+    async handleIceCandidate(userId: string, candidate: RTCIceCandidateInit) {
         try {
             const pc = this.peers.get(userId);
             if (!pc) {
@@ -304,6 +306,12 @@ export class WebRTCManager {
                 pc.remoteAudio.srcObject = null;
             }
 
+            // Clean up analyser and context
+            if (pc.remoteAnalyser && pc.remoteAudioContext) {
+                pc.remoteAnalyser.disconnect();
+                pc.remoteAudioContext.close();
+            }
+
             // Close connection
             pc.close();
             this.peers.delete(userId);
@@ -313,11 +321,11 @@ export class WebRTCManager {
     /**
      * Clean up all connections
      */
-    cleanup(): void {
+    cleanup() {
         console.log('[WebRTC] Cleaning up all connections');
 
         // Close all peer connections
-        this.peers.forEach((_, userId) => {
+        this.peers.forEach((_pc, userId) => {
             this.removePeer(userId);
         });
 
@@ -343,6 +351,14 @@ export class WebRTCManager {
     }
 
     /**
+     * Get remote audio element
+     */
+    getRemoteAudio(userId: string): HTMLAudioElement | null {
+        const pc = this.peers.get(userId);
+        return pc?.remoteAudio || null;
+    }
+
+    /**
      * Check if microphone is available
      */
     hasMicrophone() {
@@ -350,7 +366,7 @@ export class WebRTCManager {
     }
 
     /**
-     * Get audio level (for visual feedback)
+     * Get local audio level (for visual feedback)
      */
     getAudioLevel(): number {
         if (!this.localStream || !this.isTransmitting) return 0;
@@ -360,8 +376,11 @@ export class WebRTCManager {
                 const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
                 this.audioContext = new AudioContextClass();
             }
-
+            if (this.audioContext.state === 'suspended') {
+                this.audioContext.resume();
+            }
             const analyser = this.audioContext.createAnalyser();
+            analyser.fftSize = 256;
             const source = this.audioContext.createMediaStreamSource(this.localStream);
             source.connect(analyser);
 
@@ -374,9 +393,40 @@ export class WebRTCManager {
                 sum += normalized * normalized;
             }
 
-            return Math.sqrt(sum / dataArray.length);
+            const level = Math.sqrt(sum / dataArray.length);
+            source.disconnect();
+            return level;
         } catch (err) {
             console.error('[WebRTC] Failed to get audio level:', err);
+            return 0;
+        }
+    }
+
+    /**
+     * Get remote audio level (for visual feedback)
+     */
+    getRemoteAudioLevel(userId: string): number {
+        const pc = this.peers.get(userId);
+        if (!pc || !pc.remoteAnalyser || !pc.remoteAudioContext) return 0;
+
+        try {
+            if (pc.remoteAudioContext.state === 'suspended') {
+                pc.remoteAudioContext.resume();
+            }
+            const analyser = pc.remoteAnalyser;
+
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            analyser.getByteTimeDomainData(dataArray);
+
+            let sum = 0;
+            for (let i = 0; i < dataArray.length; i++) {
+                const normalized = (dataArray[i] - 128) / 128;
+                sum += normalized * normalized;
+            }
+
+            return Math.sqrt(sum / dataArray.length);
+        } catch (err) {
+            console.error('[WebRTC] Failed to get remote audio level for ' + userId + ':', err);
             return 0;
         }
     }

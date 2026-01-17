@@ -1,144 +1,141 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { WebRTCManager } from '@/services/webrtc/WebRTCManager';
-import { Socket } from 'socket.io-client';
 
-interface UseWebRTCProps {
-  socket: Socket | null;
-  username: string | undefined;
-  onConnectionStateChange?: (userId: string, state: string) => void;
-}
-
-export const useWebRTC = ({ socket, username, onConnectionStateChange }: UseWebRTCProps) => {
-  const webrtc = useRef<WebRTCManager | null>(null);
+export const useWebRTC = (socket: any, userId: string | null) => {
+  const managerRef = useRef<WebRTCManager | null>(null);
+  const socketRef = useRef(socket);
   const [isInitialized, setIsInitialized] = useState(false);
-  const [audioStatus, setAudioStatus] = useState({
-    state: "ready" as "ready" | "transmitting" | "receiving" | "error",
-    message: "Initializing..."
-  });
-  
-  // Track quality: { userId: "excellent" | "fair" | "poor" }
-  const [connectionQuality, setConnectionQuality] = useState<Record<string, string>>({});
+  const [isTransmitting, setIsTransmitting] = useState(false);
+  const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
 
   useEffect(() => {
-    if (!username || !socket) return;
+    socketRef.current = socket;
+  }, [socket]);
 
+  // 1. Initialize the Manager
+  useEffect(() => {
     const manager = new WebRTCManager();
-    webrtc.current = manager;
+    managerRef.current = manager;
 
-    // ICE Candidate signaling
+    manager.initialize().then((success) => {
+      if (success) setIsInitialized(true);
+    });
+
+    // Handle incoming remote streams
+    manager.onRemoteStream = (remoteId, stream) => {
+      setRemoteStreams((prev) => new Map(prev).set(remoteId, stream));
+    };
+
+    // Send ICE candidates to the server
     manager.onIceCandidate = (targetUserId, candidate) => {
-      socket?.emit("message", {
+      socketRef.current?.emit("message", {
         type: "signal",
         targetUserId,
-        signal: { type: "ice-candidate", candidate: candidate.toJSON() }
+        signal: { type: "ice-candidate", candidate }
       });
     };
 
-    // Remote stream handler
-    manager.onRemoteStream = (userId, _stream, _audio) => {
-      console.log(`[Hook] Receiving audio from:`, userId);
-      setAudioStatus({ state: "receiving", message: `Receiving from ${userId}` });
-    };
+    return () => manager.cleanup();
+  }, []);
 
-    // Error handler
-    manager.onError = (error) => {
-      console.error("[Hook] WebRTC error:", error);
-      setAudioStatus({ state: "error", message: error.message });
-    };
+  // 2. Handle Signaling Logic
+  useEffect(() => {
+    if (!socket || !userId) return;
 
-    // Connection state change if provided
-    if (onConnectionStateChange) {
-      manager.onConnectionStateChange = onConnectionStateChange;
-    }
+    const handleSocketMessage = async (data: any) => {
+      const message = data as any; // Cast to your expected type
+      if (message.type !== 'signal') return;
 
-    manager.initialize().then((success) => {
-      if (success) {
-        setIsInitialized(true);
-        setAudioStatus({ state: "ready", message: "Microphone ready" });
-      } else {
-        setAudioStatus({ state: "error", message: "Microphone access denied" });
-      }
-    });
-
-    // Connection Quality Polling
-    const qualityInterval = setInterval(async () => {
+      const { fromUserId, signal } = message;
+      const manager = managerRef.current;
       if (!manager) return;
-      const stats = await manager.getConnectionStats(); 
-      // Assuming your Manager has a method to aggregate RTT/Packet Loss
-      setConnectionQuality(stats);
-    }, 3000);
 
-    return () => {
-      clearInterval(qualityInterval);
-      manager.cleanup();
-    };
-  }, [username, socket, onConnectionStateChange]);
-
-  /**
-   * TIE-BREAKER LOGIC
-   * We only create an offer if our username is "greater" than the target's.
-   * This ensures only one side initiates the handshake.
-   */
-  const initiateOffer = useCallback(async (targetUserId: string) => {
-    if (!webrtc.current || !isInitialized || !username || !targetUserId) return;
-
-    if (username > targetUserId) {
-      console.log(`[Tie-Breaker] I win (${username} > ${targetUserId}). Sending Offer.`);
       try {
-        const offer = await webrtc.current.createOffer(targetUserId);
-        socket?.emit("message", {
-          type: "signal",
-          targetUserId,
-          signal: { type: "offer", offer }
-        });
-      } catch (err) {
-        console.error("Offer error:", err);
-      }
-    } else {
-      console.log(`[Tie-Breaker] I lose (${username} < ${targetUserId}). Waiting for Offer.`);
-    }
-  }, [username, socket, isInitialized]);
-
-  const handleSignal = useCallback(async (fromUserId: string, signal: any) => {
-    if (!webrtc.current) return;
-    try {
-      switch (signal.type) {
-        case "offer":
-          const answer = await webrtc.current.handleOffer(fromUserId, signal.offer);
-          socket?.emit("message", {
+        if (signal.type === 'offer') {
+          const answer = await manager.handleOffer(fromUserId, signal.offer);
+          socketRef.current?.emit("message", {
             type: "signal",
             targetUserId: fromUserId,
             signal: { type: "answer", answer }
           });
-          break;
-        case "answer":
-          await webrtc.current.handleAnswer(fromUserId, signal.answer);
-          break;
-        case "ice-candidate":
-          await webrtc.current.handleIceCandidate(fromUserId, signal.candidate);
-          break;
+        } 
+        else if (signal.type === 'answer') {
+          await manager.handleAnswer(fromUserId, signal.answer);
+        } 
+        else if (signal.type === 'ice-candidate') {
+          await manager.handleIceCandidate(fromUserId, signal.candidate);
+        }
+      } catch (err) {
+        console.error("[useWebRTC] Signaling error:", err);
+      }
+    };
+
+    socket.on("message", handleSocketMessage);
+    return () => { socket.off("message", handleSocketMessage); };
+  }, [socket, userId]);
+
+  // 3. PTT Actions
+  const startCalling = useCallback(async (targetUserId: string) => {
+    const manager = managerRef.current;
+    if (!manager || !isInitialized) return;
+
+    try {
+      const offer = await manager.createOffer(targetUserId);
+      if (offer) {
+        socketRef.current?.emit("message", {
+          type: "signal",
+          targetUserId,
+          signal: { type: "offer", offer }
+        });
       }
     } catch (err) {
-      console.error("Signaling handle error:", err);
+      console.error("[useWebRTC] Failed to start calling:", err);
     }
-  }, [socket]);
+  }, [isInitialized]);
+
+  const toggleTransmit = useCallback((transmit: boolean) => {
+    const manager = managerRef.current;
+    if (!manager) return;
+
+    if (transmit) {
+      manager.startTransmitting();
+    } else {
+      manager.stopTransmitting();
+    }
+    setIsTransmitting(manager.isTransmitting);
+  }, []);
+
+  const getPeerStatus = useCallback((userId: string) => {
+    return managerRef.current?.getPeerStatus(userId) || 'disconnected';
+  }, []);
+
+  const removePeer = useCallback((userId: string) => {
+    managerRef.current?.removePeer(userId);
+  }, []);
+
+  const getRemoteAudio = useCallback((userId: string) => {
+    return managerRef.current?.getRemoteAudio(userId) || null;
+  }, []);
+
+  const getAudioLevel = useCallback(() => {
+    return managerRef.current?.getAudioLevel() || 0;
+  }, []);
+
+  const getRemoteAudioLevel = useCallback((userId: string) => {
+    return managerRef.current?.getRemoteAudioLevel(userId) || 0;
+  }, []);
 
   return {
     isInitialized,
-    audioStatus,
-    connectionQuality,
-    initiateOffer,
-    handleSignal,
-    startTalking: () => {
-      if (webrtc.current?.startTransmitting()) {
-        setAudioStatus({ state: "transmitting", message: "Live" });
-        socket?.emit("message", { type: "status_change", status: "busy" });
-      }
-    },
-    stopTalking: () => {
-      webrtc.current?.stopTransmitting();
-      setAudioStatus({ state: "ready", message: "Ready" });
-      socket?.emit("message", { type: "status_change", status: "online" });
-    }
+    isTransmitting,
+    remoteStreams,
+    startCalling,
+    toggleTransmit,
+    getAudioLevel,
+    getRemoteAudioLevel,
+    getPeerStatus,
+    removePeer,
+    getRemoteAudio,
+    managerRef, // Expose for onError setting
   };
 };

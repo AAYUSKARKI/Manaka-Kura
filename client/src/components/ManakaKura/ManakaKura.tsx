@@ -7,7 +7,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from 
 import { Loader2, Mic, Radio, LogOut, Signal, Moon, Sun, Volume2, MessageSquare, ArrowLeft } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Socket } from "socket.io-client";
-import { connectSocket } from "@/services/socket/socketService";
+import { connectSocket } from "@/services/socket/socketService"; // Removed unused socket import
 import { useWebRTC } from "@/hooks/useWebRTC";
 import { Switch } from "@/components/ui/switch";
 import { Slider } from "@/components/ui/slider";
@@ -29,7 +29,7 @@ interface Message {
 }
 
 export default function ManakaKura() {
-  const [currentUser, setCurrentUser] = useState<{ username: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<{ username: string; userId: string } | null>(null);
   const [onlineUsers, setOnlineUsers] = useState<Map<string, User>>(new Map());
   const [userStatus, setUserStatus] = useState<"online" | "busy" | "away">("online");
   const [loginError, setLoginError] = useState("");
@@ -49,6 +49,10 @@ export default function ManakaKura() {
   const [newMessage, setNewMessage] = useState("");
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [audioLevels, setAudioLevels] = useState<Record<string, number>>({});
+  const [audioStatus, setAudioStatus] = useState<{ state: string; message: string }>({
+    state: "idle",
+    message: "Ready to Transmit",
+  });
 
   const usernameInputRef = useRef<HTMLInputElement>(null);
   const socketRef = useRef<Socket | null>(null);
@@ -68,17 +72,24 @@ export default function ManakaKura() {
   }, []);
 
   const {
-    audioStatus,
-    initiateOffer,
-    handleSignal,
-    startTalking,
-    stopTalking,
-    isInitialized
-  } = useWebRTC({
-    socket: socketRef.current,
-    username: currentUser?.username,
-    onConnectionStateChange: updateUserConnectionState
-  });
+    isInitialized,
+    isTransmitting,
+    remoteStreams,
+    startCalling,
+    toggleTransmit,
+    getAudioLevel,
+    getRemoteAudioLevel,
+    getPeerStatus,
+    removePeer,
+    getRemoteAudio,
+    managerRef,
+  } = useWebRTC(socketRef.current, currentUser?.username ?? null);
+
+  const getAudioLevelRef = useRef(getAudioLevel);
+
+  useEffect(() => {
+    getAudioLevelRef.current = getAudioLevel;
+  }, [getAudioLevel]);
 
   useEffect(() => {
     // Service Worker registration
@@ -91,13 +102,29 @@ export default function ManakaKura() {
   }, []);
 
   useEffect(() => {
+    const unlock = () => {
+      const audio = document.createElement("audio");
+      audio.play().catch(() => { });
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+
+    document.addEventListener("click", unlock);
+    document.addEventListener("keydown", unlock);
+
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("keydown", unlock);
+    };
+  }, []);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") setIsChatOpen(false);
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-
 
   useEffect(() => {
     if (isDarkMode) {
@@ -110,24 +137,64 @@ export default function ManakaKura() {
   }, [isDarkMode]);
 
   useEffect(() => {
+    if (managerRef.current) {
+      managerRef.current.onError = (err) => {
+        setAudioStatus({ state: 'error', message: err.message });
+      };
+      managerRef.current.onConnectionStateChange = (userId, state) => {
+        updateUserConnectionState(userId, state);
+      };
+    }
+  }, [managerRef.current, updateUserConnectionState]);
+
+  useEffect(() => {
     const interval = setInterval(() => {
-      if (isInitialized && audioStatus.state === 'transmitting') {
-        // Simulate audio levels for self and others
-        setAudioLevels((prev) => ({
-          ...prev,
-          [currentUser?.username || 'self']: Math.random(),
-          ...Array.from(onlineUsers.keys()).reduce((acc, userId) => {
-            acc[userId] = Math.random() * 0.5;
-            return acc;
-          }, {} as Record<string, number>)
-        }));
-      } else {
-        setAudioLevels({});
-      }
-    }, 200);
+      if (!isInitialized) return;
+
+      setAudioLevels((prev) => {
+        const levels: Record<string, number> = { ...prev };
+        if (isTransmitting && currentUser?.username) {
+          levels[currentUser.username] = getAudioLevelRef.current();
+        }
+
+        onlineUsers.forEach((user) => {
+          if (remoteStreams.has(user.userId)) {
+            levels[user.userId] = getRemoteAudioLevel(user.userId);
+          }
+        });
+
+        return levels;
+      });
+    }, 100);
 
     return () => clearInterval(interval);
-  }, [isInitialized, audioStatus.state, currentUser, onlineUsers]);
+  }, [isInitialized, isTransmitting, currentUser, onlineUsers, remoteStreams, getRemoteAudioLevel]);
+
+  useEffect(() => {
+    if (!isInitialized || !currentUser) return;
+
+    onlineUsers.forEach((user) => {
+      if (user.userId === currentUser.userId) return;
+
+      if (getPeerStatus(user.userId) !== 'disconnected') return;
+
+      // Avoid glare: only initiate if my username > their username (lexicographical)
+      if (currentUser.username.localeCompare(user.userId) <= 0) return;
+
+      console.log("🚀 Initiating offer to", user.userId);
+      startCalling(user.userId);
+    });
+  }, [isInitialized, onlineUsers, currentUser, startCalling, getPeerStatus]);
+
+  useEffect(() => {
+    // Set volume for all remote audios
+    Array.from(remoteStreams.keys()).forEach((userId) => {
+      const audio = getRemoteAudio(userId);
+      if (audio) {
+        audio.volume = globalVolume;
+      }
+    });
+  }, [globalVolume, remoteStreams, getRemoteAudio]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -157,12 +224,12 @@ export default function ManakaKura() {
         }
         const { data } = await registerResponse.json();
         console.log(data.username, "registered successs");
-        user = { username: data.username };
+        user = { username: data.username, userId: data.userId };
         console.log("New user registered:", username);
       } else if (loginResponse.ok) {
         const { data } = await loginResponse.json();
         console.log(data);
-        user = { username: data.username };
+        user = { username: data.username, userId: data.userId };
         console.log("User logged in:", username);
       } else {
         const error = await loginResponse.json();
@@ -199,12 +266,15 @@ export default function ManakaKura() {
     switch (message.type) {
       case "auth_success":
         setIsLoading(false);
+        setCurrentUser({
+          userId: message.userId,
+          username: message.username,
+        });
         if (message.onlineUsers) {
           const newOnlineUsers = new Map<string, User>();
           for (const user of message.onlineUsers) {
-            if (user.userId !== currentUser?.username) {
+            if (user.userId !== message.userId) {
               newOnlineUsers.set(user.userId, user);
-              initiateOffer(user.userId);
             }
           }
           setOnlineUsers(newOnlineUsers);
@@ -223,7 +293,7 @@ export default function ManakaKura() {
           });
           return newMap;
         });
-        initiateOffer(message.userId);
+        // Offer initiation handled in useEffect
         break;
 
       case "user_left":
@@ -232,12 +302,11 @@ export default function ManakaKura() {
           newMap.delete(message.userId);
           return newMap;
         });
+        removePeer(message.userId);
         break;
 
       case "signal":
-        if (message.signal) {
-          await handleSignal(message.fromUserId, message.signal);
-        }
+        // Handled by hook
         break;
 
       case "user_status_changed":
@@ -268,13 +337,13 @@ export default function ManakaKura() {
         break;
 
       case "typing_start":
-        setTypingUsers((prev) => new Set(prev).add(message.userId));
+        setTypingUsers((prev) => new Set(prev).add(message.fromUserId));
         break;
 
       case "typing_stop":
         setTypingUsers((prev) => {
           const next = new Set(prev);
-          next.delete(message.userId);
+          next.delete(message.fromUserId);
           return next;
         });
         break;
@@ -303,17 +372,27 @@ export default function ManakaKura() {
     setMessages([]);
   };
 
+  const startTalking = () => {
+    toggleTransmit(true);
+    setAudioStatus({ state: "transmitting", message: "Broadcasting Live" });
+    if (navigator.vibrate) navigator.vibrate(50);
+  };
+
+  const stopTalking = () => {
+    toggleTransmit(false);
+    setAudioStatus({ state: "idle", message: "Ready to Transmit" });
+    if (navigator.vibrate) navigator.vibrate([30, 30]);
+  };
+
   const togglePTT = (e: React.PointerEvent) => {
     if (audioStatus.state === "error") return;
 
     if (e.type === 'pointerdown') {
       console.log("[App] PTT Toggle: ON");
       startTalking();
-      if (navigator.vibrate) navigator.vibrate(50);
     } else if (e.type === 'pointerup' || e.type === 'pointerleave' || e.type === 'pointercancel') {
       console.log("[App] PTT Toggle: OFF");
       stopTalking();
-      if (navigator.vibrate) navigator.vibrate([30, 30]);
     }
   };
 
@@ -466,11 +545,11 @@ export default function ManakaKura() {
                             {Array.from({ length: 5 }).map((_, i) => (
                               <div
                                 key={i}
-                                className="audio-wave-bar w-1 sm:w-1.5"
+                                className="audio-wave-bar w-1 sm:w-1.5 bg-[var(--accent)] rounded-full"
                                 style={{
-                                  height: `${Math.random() * 100}%`,
-                                  animationDelay: `${i * 0.2}s`,
-                                  opacity: audioLevels[user.userId] || 0,
+                                  height: `${(audioLevels[user.userId] || 0) * 100}%`,
+                                  animationDelay: `${i * 0.1}s`,
+                                  transition: 'height 0.1s ease',
                                 }}
                               />
                             ))}
@@ -484,7 +563,7 @@ export default function ManakaKura() {
             </section>
             <div className="mt-8 sm:mt-12 flex flex-col items-center gap-4 sm:gap-6">
               <p className="text-[var(--text-secondary)] font-semibold text-base sm:text-xl">
-                {audioStatus.state === "transmitting" ? "Release to Silence" : "Hold to Broadcast"}
+                {isTransmitting ? "Release to Silence" : "Hold to Broadcast"}
               </p>
 
               <Button
@@ -492,15 +571,14 @@ export default function ManakaKura() {
                 onPointerUp={togglePTT}
                 onPointerLeave={togglePTT}
                 onPointerCancel={togglePTT}
-                disabled={audioStatus.state === "receiving" || audioStatus.state === "error"}
                 className={cn(
                   "ptt-button w-48 h-48 xs:w-52 xs:h-52 sm:w-60 sm:h-60 rounded-full bg-[var(--bg-secondary)] border-6 sm:border-8 border-[var(--accent)] flex flex-col items-center justify-center gap-3 sm:gap-5 text-[var(--accent)] transition-all duration-300 shadow-2xl",
-                  audioStatus.state === "transmitting" ? "bg-[var(--accent)] text-[var(--bg-primary)] scale-105 sm:scale-110 border-[var(--accent-hover)] shadow-[0_0_40px_rgba(var(--accent-rgb),0.8)] animate-transmit-pulse" : "hover:scale-105 hover:shadow-[0_0_30px_rgba(var(--accent-rgb),0.6)]"
+                  isTransmitting ? "bg-[var(--accent)] text-[var(--bg-primary)] scale-105 sm:scale-110 border-[var(--accent-hover)] shadow-[0_0_40px_rgba(var(--accent-rgb),0.8)] animate-transmit-pulse" : "hover:scale-105 hover:shadow-[0_0_30px_rgba(var(--accent-rgb),0.6)]"
                 )}
               >
-                <Mic className={cn("w-16 h-16 xs:w-20 xs:h-20 sm:w-24 sm:h-24", audioStatus.state === "transmitting" && "animate-pulse")} />
+                <Mic className={cn("w-16 h-16 xs:w-20 xs:h-20 sm:w-24 sm:h-24", isTransmitting && "animate-pulse")} />
                 <span className="text-sm xs:text-base sm:text-lg font-extrabold uppercase tracking-widest">
-                  {audioStatus.state === "transmitting" ? "BROADCASTING" : "HOLD TO TALK"}
+                  {isTransmitting ? "BROADCASTING" : "HOLD TO TALK"}
                 </span>
               </Button>
 
@@ -516,8 +594,8 @@ export default function ManakaKura() {
               </div>
 
               <p className="text-[var(--text-secondary)] text-sm sm:text-base flex items-center gap-2 sm:gap-3 opacity-80 animate-glow">
-                <Signal className={cn("w-5 h-5 sm:w-6 sm:h-6", audioStatus.state === "transmitting" ? "text-[var(--success)] animate-spin" : "opacity-60")} />
-                {audioStatus.state === "transmitting" ? "Waves in Motion" : "Awaiting Your Voice"}
+                <Signal className={cn("w-5 h-5 sm:w-6 sm:h-6", isTransmitting ? "text-[var(--success)] animate-spin" : "opacity-60")} />
+                {isTransmitting ? "Waves in Motion" : "Awaiting Your Voice"}
               </p>
             </div>
 
@@ -559,7 +637,7 @@ export default function ManakaKura() {
                       <div
                         key={msg.id}
                         className={cn(
-                          "p-2 sm:p-3 rounded-[var(--radius-lg)] max-w-[80%] shadow-sm",
+                          "p-2 sm:p-3 rounded-[var(--radius-lg)] max-w-[80%] shadow-sm transition-all duration-200 hover:scale-105",
                           msg.userId === currentUser?.username
                             ? "bg-[var(--accent)]/30 ml-auto"
                             : "bg-[var(--bg-tertiary)]/80"
