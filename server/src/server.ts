@@ -1,5 +1,6 @@
 import express, { type Express } from "express";
-import cors from "cors";
+import cors  from "cors";
+import { CorsOptions } from "cors";
 import helmet from "helmet";
 import http from "http";
 import rateLimiter from "./common/middleware/rateLimiter";
@@ -22,10 +23,31 @@ setupSocketHandlers(io);
 // Middlewares
 app.use(helmet());
 app.use(rateLimiter);
-app.use(cors({
-    origin: process.env.CORS_ORIGIN,
-    credentials: true
-}));
+
+// Define as a constant to ensure read-only access
+const allowedOrigins: string[] = [
+  'https://manaka-kura.vercel.app/', 
+  "https://manaka-kura.vercel.app",
+  'http://localhost:5173'
+];
+
+export const corsOptions: CorsOptions = {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    // !origin allows for server-to-server requests or tools like Postman
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'DELETE', 'PUT', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'X-Foo'],
+  credentials: true,
+};
+app.use(cors(corsOptions));
+
+// Body parsers
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
