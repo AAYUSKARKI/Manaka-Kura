@@ -9,6 +9,7 @@
 		},
 		"moduleResolution": "Node",
 		"outDir": "dist",
+		"rootDir": "./src",
 		"importsNotUsedAsValues": "remove",
 		"strict": true,
 		"esModuleInterop": true,
