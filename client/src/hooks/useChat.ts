@@ -77,7 +77,7 @@ useEffect(() => {
   }, [socket, currentUserName, addMessage]);
 
   const handleTyping = useCallback(() => {
-    if (!socket) return;
+    if (!socket || !currentUserName) return;
     const payload = { 
     fromUserId: currentUserName, // Changed from userId
     username: currentUserName    // Added username
@@ -89,7 +89,7 @@ useEffect(() => {
     typingTimeoutRef.current = setTimeout(() => {
       socket.emit("message", { type: "typing_stop", ...payload });
     }, 800);
-  }, [socket]);
+  }, [socket, currentUserName]);
 
   return {
     messages,
