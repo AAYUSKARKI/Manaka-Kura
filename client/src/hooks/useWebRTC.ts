@@ -6,13 +6,15 @@ export const useWebRTC = (socket: any, userId: string | null) => {
   const socketRef = useRef(socket);
   const [isInitialized, setIsInitialized] = useState(false);
   const [isTransmitting, setIsTransmitting] = useState(false);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [localVideoStream, setLocalVideoStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
     socketRef.current = socket;
   }, [socket]);
 
-  // 1. Initialize the Manager
   useEffect(() => {
     const manager = new WebRTCManager();
     managerRef.current = manager;
@@ -21,12 +23,15 @@ export const useWebRTC = (socket: any, userId: string | null) => {
       if (success) setIsInitialized(true);
     });
 
-    // Handle incoming remote streams
     manager.onRemoteStream = (remoteId, stream) => {
       setRemoteStreams((prev) => new Map(prev).set(remoteId, stream));
     };
 
-    // Send ICE candidates to the server
+    manager.onRemoteVideoStream = (remoteId, stream) => {
+      console.log('[useWebRTC] Remote video stream received for:', remoteId);
+      setRemoteVideoStreams((prev) => new Map(prev).set(remoteId, stream));
+    };
+
     manager.onIceCandidate = (targetUserId, candidate) => {
       socketRef.current?.emit("message", {
         type: "signal",
@@ -35,15 +40,24 @@ export const useWebRTC = (socket: any, userId: string | null) => {
       });
     };
 
+    // Handle renegotiation (when video is enabled/disabled mid-call)
+    manager.onNeedRenegotiation = (targetUserId, offer) => {
+      console.log('[useWebRTC] Sending renegotiation offer to:', targetUserId);
+      socketRef.current?.emit("message", {
+        type: "signal",
+        targetUserId,
+        signal: { type: "offer", offer }
+      });
+    };
+
     return () => manager.cleanup();
   }, []);
 
-  // 2. Handle Signaling Logic
   useEffect(() => {
     if (!socket || !userId) return;
 
     const handleSocketMessage = async (data: any) => {
-      const message = data as any; // Cast to your expected type
+      const message = data;
       if (message.type !== 'signal') return;
 
       const { fromUserId, signal } = message;
@@ -52,6 +66,7 @@ export const useWebRTC = (socket: any, userId: string | null) => {
 
       try {
         if (signal.type === 'offer') {
+          console.log('[useWebRTC] Received offer from:', fromUserId);
           const answer = await manager.handleOffer(fromUserId, signal.offer);
           socketRef.current?.emit("message", {
             type: "signal",
@@ -60,6 +75,7 @@ export const useWebRTC = (socket: any, userId: string | null) => {
           });
         } 
         else if (signal.type === 'answer') {
+          console.log('[useWebRTC] Received answer from:', fromUserId);
           await manager.handleAnswer(fromUserId, signal.answer);
         } 
         else if (signal.type === 'ice-candidate') {
@@ -74,7 +90,6 @@ export const useWebRTC = (socket: any, userId: string | null) => {
     return () => { socket.off("message", handleSocketMessage); };
   }, [socket, userId]);
 
-  // 3. PTT Actions
   const startCalling = useCallback(async (targetUserId: string) => {
     const manager = managerRef.current;
     if (!manager || !isInitialized) return;
@@ -105,12 +120,36 @@ export const useWebRTC = (socket: any, userId: string | null) => {
     setIsTransmitting(manager.isTransmitting);
   }, []);
 
+  const toggleVideo = useCallback(async () => {
+    const manager = managerRef.current;
+    if (!manager) return;
+
+    if (!manager.isVideoEnabled) {
+      console.log('[useWebRTC] Enabling video...');
+      const stream = await manager.enableVideo();
+      if (stream) {
+        setLocalVideoStream(stream);
+        setIsVideoEnabled(true);
+      }
+    } else {
+      console.log('[useWebRTC] Disabling video...');
+      await manager.disableVideo();
+      setLocalVideoStream(null);
+      setIsVideoEnabled(false);
+    }
+  }, []);
+
   const getPeerStatus = useCallback((userId: string) => {
     return managerRef.current?.getPeerStatus(userId) || 'disconnected';
   }, []);
 
   const removePeer = useCallback((userId: string) => {
     managerRef.current?.removePeer(userId);
+    setRemoteVideoStreams((prev) => {
+      const next = new Map(prev);
+      next.delete(userId);
+      return next;
+    });
   }, []);
 
   const getRemoteAudio = useCallback((userId: string) => {
@@ -128,14 +167,18 @@ export const useWebRTC = (socket: any, userId: string | null) => {
   return {
     isInitialized,
     isTransmitting,
+    isVideoEnabled,
+    localVideoStream,
     remoteStreams,
+    remoteVideoStreams,
     startCalling,
     toggleTransmit,
+    toggleVideo,
     getAudioLevel,
     getRemoteAudioLevel,
     getPeerStatus,
     removePeer,
     getRemoteAudio,
-    managerRef, // Expose for onError setting
+    managerRef,
   };
 };

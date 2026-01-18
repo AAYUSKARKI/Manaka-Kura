@@ -1,5 +1,5 @@
 export interface WebRTCError {
-  type: 'microphone' | 'connection' | 'signaling';
+  type: 'microphone' | 'connection' | 'signaling' | 'camera' | 'screen';
   message: string;
   error?: any;
 }

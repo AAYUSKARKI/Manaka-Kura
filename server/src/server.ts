@@ -22,7 +22,7 @@ const io = new Server(server, {
 setupSocketHandlers(io);
 // Middlewares
 app.use(helmet());
-app.use(rateLimiter);
+// app.use(rateLimiter);
 
 // Define as a constant to ensure read-only access
 const allowedOrigins: string[] = [
