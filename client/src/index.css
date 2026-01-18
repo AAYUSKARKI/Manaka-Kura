@@ -308,10 +308,8 @@ body {
 }
 
 .audio-wave-bar {
-  width: 4px;
-  background: var(--accent);
-  border-radius: 9999px;
-  animation: wave 1s infinite ease-in-out;
+  transition: height 80ms ease-out; /* Match this to your hook interval */
+  will-change: height;
 }
 
 .online { background-color: var(--status-online); }
