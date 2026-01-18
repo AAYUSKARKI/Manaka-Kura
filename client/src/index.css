@@ -340,3 +340,79 @@ body {
 .animate-slide-in {
   animation: slide-in 0.3s ease-out;
 }
+
+@keyframes blinkCursor {
+  50% { border-right-color: transparent; }
+}
+
+@keyframes typeAndDelete {
+  0%, 10% { width: 0; }
+  45%, 55% { width: 100%; } /* Changed to 100% for flexibility */
+  90%, 100% { width: 0; }
+}
+
+.terminal-loader {
+  border: 0.1em solid #333;
+  background-color: #1a1a1a;
+  color: #0f0;
+  font-family: "Courier New", Courier, monospace;
+  font-size: 1rem;
+  padding: 1.5em 1em;
+  width: 18em; /* Slightly wider to fit the longer text */
+  margin: 100px auto;
+  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.5);
+  border-radius: 6px;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.terminal-header {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1.8em;
+  background-color: #333;
+  padding: 0 0.6em;
+  box-sizing: border-box;
+}
+
+.terminal-title {
+  float: left;
+  line-height: 1.8em;
+  color: #eee;
+  font-size: 0.8em;
+}
+
+.terminal-controls {
+  float: right;
+  line-height: 1.8em;
+  display: flex;
+  align-items: center;
+  height: 100%;
+}
+
+.control {
+  display: inline-block;
+  width: 0.7em;
+  height: 0.7em;
+  margin-left: 0.4em;
+  border-radius: 50%;
+}
+
+.control.close { background-color: #ff5f56; }
+.control.minimize { background-color: #ffbd2e; }
+.control.maximize { background-color: #27c93f; }
+
+.text {
+  display: inline-block;
+  white-space: nowrap;
+  overflow: hidden;
+  border-right: 0.2em solid #0f0;
+  /* Reduced steps to make it look smoother with longer text */
+  animation: typeAndDelete 3s steps(20) infinite,
+             blinkCursor 0.5s step-end infinite alternate;
+  margin-top: 1.5em;
+  font-weight: bold;
+}

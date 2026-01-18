@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, MessageSquare } from "lucide-react";
+import { MessageSquare } from "lucide-react";
 import type { Socket } from "socket.io-client";
 import { connectSocket } from "@/services/socket/socketService";
 import { useWebRTC } from "@/hooks/useWebRTC";
@@ -15,6 +15,7 @@ import { useChat } from "@/hooks/useChat";
 import { useSocketEvents } from "@/hooks/useSocketEvents";
 import { Button } from "../ui/button";
 import { PTTControls } from "../video/VideoToggle";
+import Loader from "../ui/Loader";
 
 interface User {
   userId: string;
@@ -454,7 +455,7 @@ export default function ManakaKura() {
       )}
       {isLoading && (
         <div className="fixed inset-0 bg-background/95 flex items-center justify-center z-50">
-          <Loader2 className="w-16 h-16 text-primary animate-spin" />
+          <Loader />
         </div>
       )}
     </div>
