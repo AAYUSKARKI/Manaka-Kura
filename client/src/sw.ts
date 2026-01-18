@@ -14,8 +14,8 @@ self.addEventListener('push', (event) => {
   const data = event.data ? event.data.json() : {};
   const options = {
     body: data.body || 'New message in Manaka Kura',
-    icon: '/pwa-192x192.png',
-    badge: '/pwa-192x192.png',
+    icon: '/image.png',
+    badge: '/image.png',
     vibrate: [200, 100, 200],
     data: data.data || {}
   };
