@@ -20,7 +20,7 @@ export class WebRTCManager {
 
   public onConnectionStateChange: ((userId: string, state: RTCPeerConnectionState) => void) | null = null;
   public onRemoteStream: ((userId: string, stream: MediaStream, audio: HTMLAudioElement) => void) | null = null;
-  public onRemoteVideoStream: ((userId: string, stream: MediaStream) => void) | null = null;
+  public onRemoteVideoStream: ((userId: string, stream: MediaStream | null) => void) | null = null;
   public onIceCandidate: ((userId: string, candidate: RTCIceCandidate) => void) | null = null;
   public onNeedRenegotiation: ((userId: string, offer: RTCSessionDescriptionInit) => void) | null = null;
   public onError: ((error: WebRTCError) => void) | null = null;
@@ -147,8 +147,15 @@ export class WebRTCManager {
       for (const [userId, pc] of this.peers.entries()) {
         const videoSenders = pc.getSenders().filter(s => s.track?.kind === 'video');
         videoSenders.forEach(sender => {
+          // Stop the track before removing
+          if (sender.track) {
+            sender.track.stop();
+          }
           pc.removeTrack(sender);
         });
+
+        // Clear remote video stream on the remote side
+        // This will be handled by the ontrack event when renegotiation completes
 
         // Renegotiate connection
         await this.renegotiateConnection(userId);
@@ -233,7 +240,7 @@ export class WebRTCManager {
     };
 
     pc.ontrack = (event) => {
-      console.log('[WebRTC] Received track from:', userId, 'kind:', event.track.kind);
+      console.log('[WebRTC] Received track from:', userId, 'kind:', event.track.kind, 'readyState:', event.track.readyState);
 
       if (event.streams && event.streams[0]) {
         const remoteStream = event.streams[0];
@@ -263,13 +270,28 @@ export class WebRTCManager {
             console.error('[WebRTC] Failed to play remote audio:', err);
           });
         } else if (event.track.kind === 'video') {
-          // Create or update video stream
-          if (!pc.remoteVideoStream) {
-            pc.remoteVideoStream = new MediaStream();
-          }
-          pc.remoteVideoStream.addTrack(event.track);
+          // Create new video stream or recreate if needed
+          pc.remoteVideoStream = new MediaStream([event.track]);
 
           console.log('[WebRTC] Video track added for:', userId);
+          
+          // Listen for track ended (when remote user disables video)
+          event.track.onended = () => {
+            console.log('[WebRTC] Remote video track ended for:', userId);
+            pc.remoteVideoStream = undefined;
+            if (this.onRemoteVideoStream) {
+              this.onRemoteVideoStream(userId, null);
+            }
+          };
+
+          // Listen for track mute (another way video can stop)
+          event.track.onmute = () => {
+            console.log('[WebRTC] Remote video track muted for:', userId);
+          };
+
+          event.track.onunmute = () => {
+            console.log('[WebRTC] Remote video track unmuted for:', userId);
+          };
           
           if (this.onRemoteVideoStream) {
             this.onRemoteVideoStream(userId, pc.remoteVideoStream);
@@ -304,6 +326,13 @@ export class WebRTCManager {
       const pc = this.createPeerConnection(userId);
       
       console.log('[WebRTC] Handling offer from:', userId);
+      
+      // Check if this is a renegotiation (remote description already set)
+      if (pc.signalingState === 'have-remote-offer') {
+        console.log('[WebRTC] Already have remote offer, rolling back...');
+        await pc.setLocalDescription({ type: 'rollback' });
+      }
+      
       await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
       const answer = await pc.createAnswer();

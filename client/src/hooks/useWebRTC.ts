@@ -8,7 +8,7 @@ export const useWebRTC = (socket: any, userId: string | null) => {
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
-  const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream>>(new Map());
+  const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream | null>>(new Map());
   const [localVideoStream, setLocalVideoStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
@@ -28,8 +28,18 @@ export const useWebRTC = (socket: any, userId: string | null) => {
     };
 
     manager.onRemoteVideoStream = (remoteId, stream) => {
-      console.log('[useWebRTC] Remote video stream received for:', remoteId);
-      setRemoteVideoStreams((prev) => new Map(prev).set(remoteId, stream));
+      console.log('[useWebRTC] Remote video stream update for:', remoteId, 'stream:', stream ? 'present' : 'null');
+      setRemoteVideoStreams((prev) => {
+        const next = new Map(prev);
+        if (stream === null) {
+          // Video stopped - set to null but keep the entry
+          next.set(remoteId, null);
+        } else {
+          // Video started/updated
+          next.set(remoteId, stream);
+        }
+        return next;
+      });
     };
 
     manager.onIceCandidate = (targetUserId, candidate) => {
