@@ -28,12 +28,19 @@ export function UserCard({
 }: UserCardProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  useEffect(() => {
-    if (videoRef.current && videoStream) {
-      console.log('[UserCard] Setting video stream for:', user.username);
+useEffect(() => {
+  if (videoRef.current) {
+    if (videoStream) {
       videoRef.current.srcObject = videoStream;
+      videoRef.current.play().catch(err => {
+        console.error('[UserCard] Failed to play video:', err);
+      });
+    } else {
+      // ✅ THIS IS THE FIX - clears frozen frames
+      videoRef.current.srcObject = null;
     }
-  }, [videoStream, user.username]);
+  }
+}, [videoStream, user.username]);
 
   const hasVideo = !!videoStream;
 
