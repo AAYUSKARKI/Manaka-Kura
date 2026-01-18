@@ -8,7 +8,6 @@ import { LoginForm } from "../auth/LoginForm";
 import { Header } from "../layout/Header";
 import { ConnectionStatusBar } from "../layout/ConnectionStatusBar";
 import { UserCard } from "../voice/UserCard";
-import { PTTButton } from "../voice/PTTButton";
 import { VolumeControl } from "../voice/VolumeControl";
 import { ChatDrawer } from "../chat/ChatDrawer";
 import { useAudioLevels } from "@/hooks/useAudioLevels";
