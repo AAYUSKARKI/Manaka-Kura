@@ -107,7 +107,7 @@ export function ScreenShareCard({
   return (
     <div 
       ref={containerRef}
-      className="fixed inset-0 z-[100] bg-black/98 backdrop-blur-md flex items-center justify-center"
+      className="fixed inset-0 z-100 bg-black/98 backdrop-blur-md flex items-center justify-center"
     >
       {/* Top Controls Bar */}
       <div 

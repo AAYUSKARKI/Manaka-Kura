@@ -18,7 +18,6 @@ import { EnhancedControlBar } from "../video/VideoToggle";
 import Loader from "../ui/Loader";
 import { ScreenShareCard } from "../screen/ScreenShareCard";
 import { ScreenSharePreview } from "../screen/ScreenSharePreview";
-import { StreamDebugPanel } from "../debug/StreamDebugPanel";
 interface User {
   userId: string;
   username: string;
@@ -514,12 +513,6 @@ useEffect(() => {
                 onClose={() => setViewingScreen(null)}
               />
             )}
-            {/* Stream Debug Panel */}
-            <StreamDebugPanel
-              onlineUsers={onlineUsers}
-              remoteVideoStreams={remoteVideoStreams}
-              remoteScreenStreams={remoteScreenStreams}
-            />
             
             <VolumeControl volume={globalVolume} onVolumeChange={setGlobalVolume} />
             <Button
