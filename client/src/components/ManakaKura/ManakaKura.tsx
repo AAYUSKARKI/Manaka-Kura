@@ -14,9 +14,11 @@ import { useAudioLevels } from "@/hooks/useAudioLevels";
 import { useChat } from "@/hooks/useChat";
 import { useSocketEvents } from "@/hooks/useSocketEvents";
 import { Button } from "../ui/button";
-import { PTTControls } from "../video/VideoToggle";
+import { EnhancedControlBar } from "../video/VideoToggle";
 import Loader from "../ui/Loader";
-
+import { ScreenShareCard } from "../screen/ScreenShareCard";
+import { ScreenSharePreview } from "../screen/ScreenSharePreview";
+import { StreamDebugPanel } from "../debug/StreamDebugPanel";
 interface User {
   userId: string;
   username: string;
@@ -58,6 +60,7 @@ export default function ManakaKura() {
       return newMap;
     });
   }, []);
+  const [viewingScreen, setViewingScreen] = useState<string | null>(null);
 
   const {
     isInitialized,
@@ -75,6 +78,10 @@ export default function ManakaKura() {
     remoteVideoStreams,
     toggleVideo,
     managerRef,
+    isScreenSharing,
+    localScreenStream,
+    remoteScreenStreams,
+    toggleScreenShare,
   } = useWebRTC(socketRef.current, currentUser?.userId ?? null);
 
   const audioLevels = useAudioLevels(
@@ -97,6 +104,40 @@ export default function ManakaKura() {
   } = useChat(socketRef.current, currentUser?.username);
 
   const [newMessage, setNewMessage] = useState("");
+
+  // CRITICAL FIX: Get ONLY the camera video stream for a user
+  // This function ensures we NEVER show screen share in the video card
+  const getCameraVideoForCard = (userId: string): MediaStream | null => {
+    // First, check if they have a screen share
+    const screenShare = remoteScreenStreams.get(userId);
+    const videoStream = remoteVideoStreams.get(userId);
+    
+    // If no video stream, return null
+    if (!videoStream) return null;
+    
+    // If there's a screen share, we need to verify the video stream is NOT the screen
+    if (screenShare) {
+      // Check if videoStream is the same as screenShare
+      if (videoStream === screenShare) {
+        console.log(`[CRITICAL] User ${userId} video stream is actually screen share! Returning null.`);
+        return null;
+      }
+      
+      // Double check by inspecting the tracks
+      const videoTracks = videoStream.getVideoTracks();
+      if (videoTracks.length > 0) {
+        const label = videoTracks[0].label.toLowerCase();
+        const isScreen = label.includes('screen') || label.includes('display') || label.includes('monitor');
+        if (isScreen) {
+          console.log(`[CRITICAL] User ${userId} video track detected as screen: ${label}`);
+          return null;
+        }
+      }
+    }
+    
+    // This is a genuine camera stream
+    return videoStream;
+  };
 
   // Service Worker
   useEffect(() => {
@@ -368,6 +409,17 @@ export default function ManakaKura() {
     connectionState: 'connected'
   } : null;
 
+  // In ManakaKura.tsx, add this right before the ScreenShareCard render:
+
+useEffect(() => {
+  console.log('[ManakaKura] viewingScreen:', viewingScreen);
+  console.log('[ManakaKura] remoteScreenStreams:', Array.from(remoteScreenStreams.entries()));
+  if (viewingScreen) {
+    const stream = remoteScreenStreams.get(viewingScreen);
+    console.log('[ManakaKura] Screen stream for viewing user:', stream);
+  }
+}, [viewingScreen, remoteScreenStreams]);
+
   return (
     <div className="min-h-screen flex flex-col bg-background touch-none select-none overflow-hidden scroll-smooth antialiased">
       {!currentUser ? (
@@ -395,6 +447,7 @@ export default function ManakaKura() {
                 Active Voices <Badge className="bg-primary/80 text-primary-foreground rounded-full px-3 py-1 text-sm shadow-sm">{onlineUsers.size + 1}</Badge>
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 sm:gap-6">
+                {/* LOCAL USER CARD - Shows YOUR camera video ONLY */}
                 {localUser && (
                   <UserCard
                     key={localUser.userId}
@@ -404,6 +457,8 @@ export default function ManakaKura() {
                     videoStream={localVideoStream}
                     isAudioActive={audioLevels[localUser.userId] > 0.1 || isTransmitting}
                     isLocal={true}
+                    hasScreenShare={isScreenSharing}
+                    onViewScreen={() => console.log('View own screen')}
                   />
                 )}
                 {onlineUsers.size === 0 && !localUser ? (
@@ -412,26 +467,60 @@ export default function ManakaKura() {
                     <p className="text-sm mt-2">Invite your friends to join!</p>
                   </div>
                 ) : (
-                  Array.from(onlineUsers.values()).map((user) => (
-                    <UserCard
-                      key={user.userId}
-                      user={user}
-                      audioLevel={audioLevels[user.userId] || 0}
-                      isJoining={animateJoin === user.userId}
-                      videoStream={remoteVideoStreams.get(user.userId)}
-                      isAudioActive={audioLevels[user.userId] > 0.1}
-                    />
-                  ))
+                  /* REMOTE USER CARDS - Shows their camera video ONLY, NEVER screen share */
+                  Array.from(onlineUsers.values()).map((user) => {
+                    const cameraVideo = getCameraVideoForCard(user.userId);
+                    const hasScreen = !!remoteScreenStreams.get(user.userId);
+                    
+                    return (
+                      <UserCard
+                        key={user.userId}
+                        user={user}
+                        audioLevel={audioLevels[user.userId] || 0}
+                        isJoining={animateJoin === user.userId}
+                        videoStream={cameraVideo}
+                        isAudioActive={audioLevels[user.userId] > 0.1}
+                        hasScreenShare={hasScreen}
+                        onViewScreen={() => setViewingScreen(user.userId)}
+                      />
+                    );
+                  })
                 )}
               </div>
             </section>
-            <PTTControls
+            <EnhancedControlBar
               isTransmitting={isTransmitting}
               isVideoEnabled={isVideoEnabled}
+              isScreenSharing={isScreenSharing}
               onTogglePTT={togglePTT}
               onToggleVideo={toggleVideo}
+              onToggleScreen={toggleScreenShare}
               disabled={audioStatus.state === "error"}
             />
+            
+            {/* YOUR screen share preview (bottom-left) */}
+            <ScreenSharePreview
+              screenStream={localScreenStream}
+              username={currentUser.username}
+              onStop={toggleScreenShare}
+            />
+
+            {/* REMOTE screen share viewer (full-screen overlay) */}
+            {viewingScreen && remoteScreenStreams.get(viewingScreen) && (
+              <ScreenShareCard
+                user={onlineUsers.get(viewingScreen)!}
+                screenStream={remoteScreenStreams.get(viewingScreen)!}
+                cameraStream={getCameraVideoForCard(viewingScreen)}
+                onClose={() => setViewingScreen(null)}
+              />
+            )}
+            {/* Stream Debug Panel */}
+            <StreamDebugPanel
+              onlineUsers={onlineUsers}
+              remoteVideoStreams={remoteVideoStreams}
+              remoteScreenStreams={remoteScreenStreams}
+            />
+            
             <VolumeControl volume={globalVolume} onVolumeChange={setGlobalVolume} />
             <Button
               onClick={toggleChat}

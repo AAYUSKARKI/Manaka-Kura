@@ -5,22 +5,27 @@ interface ExtendedRTCPeerConnection extends RTCPeerConnection {
   remoteAudioContext?: AudioContext;
   remoteAnalyser?: AnalyserNode;
   remoteVideoStream?: MediaStream;
+  remoteScreenStream?: MediaStream;
 }
 
 export class WebRTCManager {
   private peers: Map<string, ExtendedRTCPeerConnection>;
   private localStream: MediaStream | null;
   private localVideoStream: MediaStream | null;
+  private localScreenStream: MediaStream | null;
   private audioContext: AudioContext | null;
   private config: WebRTCConfig;
-
+  private cameraTransceiverMids: Set<string> = new Set();
+private screenTransceiverMids: Set<string> = new Set();
   public isMuted: boolean;
   public isTransmitting: boolean;
   public isVideoEnabled: boolean;
+  public isScreenSharing: boolean;
 
   public onConnectionStateChange: ((userId: string, state: RTCPeerConnectionState) => void) | null = null;
   public onRemoteStream: ((userId: string, stream: MediaStream, audio: HTMLAudioElement) => void) | null = null;
   public onRemoteVideoStream: ((userId: string, stream: MediaStream | null) => void) | null = null;
+  public onRemoteScreenStream: ((userId: string, stream: MediaStream | null) => void) | null = null;
   public onIceCandidate: ((userId: string, candidate: RTCIceCandidate) => void) | null = null;
   public onNeedRenegotiation: ((userId: string, offer: RTCSessionDescriptionInit) => void) | null = null;
   public onError: ((error: WebRTCError) => void) | null = null;
@@ -29,10 +34,12 @@ export class WebRTCManager {
     this.peers = new Map();
     this.localStream = null;
     this.localVideoStream = null;
+    this.localScreenStream = null;
     this.audioContext = null;
     this.isMuted = true;
     this.isTransmitting = false;
     this.isVideoEnabled = false;
+    this.isScreenSharing = false;
 
     this.config = {
       iceServers: [
@@ -93,49 +100,55 @@ export class WebRTCManager {
     }
   }
 
-  async enableVideo() {
-    try {
-      console.log('[WebRTC] Requesting camera access...');
-      this.localVideoStream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          facingMode: 'user'
-        },
-        audio: false
+ async enableVideo() {
+  try {
+    console.log('[WebRTC] Requesting camera access...');
+    this.localVideoStream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        facingMode: 'user'
+      },
+      audio: false
+    });
+
+    this.isVideoEnabled = true;
+
+    for (const [userId, pc] of this.peers.entries()) {
+      this.localVideoStream?.getTracks().forEach(track => {
+        const sender = pc.getSenders().find(s => s.track?.kind === 'video' && s.track.label.includes('camera'));
+        if (sender) {
+          sender.replaceTrack(track);
+        } else {
+          const newSender = pc.addTrack(track, this.localVideoStream!);
+          // Track that this is a camera sender
+          const transceivers = pc.getTransceivers();
+          const transceiver = transceivers.find(t => t.sender === newSender);
+          if (transceiver && transceiver.mid) {
+            this.cameraTransceiverMids.add(transceiver.mid);
+            console.log('[WebRTC] 📹 Marked transceiver', transceiver.mid, 'as CAMERA');
+          }
+        }
       });
 
-      this.isVideoEnabled = true;
-
-      // Add video tracks to all existing peer connections
-      for (const [userId, pc] of this.peers.entries()) {
-        this.localVideoStream?.getTracks().forEach(track => {
-          const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-          if (sender) {
-            sender.replaceTrack(track);
-          } else {
-            pc.addTrack(track, this.localVideoStream!);
-          }
-        });
-
-        // Renegotiate connection
-        await this.renegotiateConnection(userId);
-      }
-
-      console.log('[WebRTC] Camera enabled');
-      return this.localVideoStream;
-    } catch (err) {
-      console.error('[WebRTC] Failed to enable camera:', err);
-      if (this.onError) {
-        this.onError({
-          type: 'camera',
-          message: 'Camera access denied or not available',
-          error: err
-        });
-      }
-      return null;
+      await this.renegotiateConnection(userId);
     }
+
+    console.log('[WebRTC] Camera enabled');
+    return this.localVideoStream;
+  } catch (err) {
+    console.error('[WebRTC] Failed to enable camera:', err);
+    if (this.onError) {
+      this.onError({
+        type: 'camera',
+        message: 'Camera access denied or not available',
+        error: err
+      });
+    }
+    return null;
   }
+}
+
 
   async disableVideo() {
     if (this.localVideoStream) {
@@ -143,21 +156,15 @@ export class WebRTCManager {
         track.stop();
       });
 
-      // Remove video tracks from all peer connections
       for (const [userId, pc] of this.peers.entries()) {
-        const videoSenders = pc.getSenders().filter(s => s.track?.kind === 'video');
+        const videoSenders = pc.getSenders().filter(s => s.track?.kind === 'video' && s.track.label.includes('camera'));
         videoSenders.forEach(sender => {
-          // Stop the track before removing
           if (sender.track) {
             sender.track.stop();
           }
           pc.removeTrack(sender);
         });
 
-        // Clear remote video stream on the remote side
-        // This will be handled by the ontrack event when renegotiation completes
-
-        // Renegotiate connection
         await this.renegotiateConnection(userId);
       }
 
@@ -167,38 +174,172 @@ export class WebRTCManager {
     }
   }
 
-  private async renegotiateConnection(userId: string) {
-    const pc = this.peers.get(userId);
-    if (!pc) return;
+ async startScreenShare() {
+  try {
+    console.log('[WebRTC] 🖥️ Requesting screen share access...');
+    
+    this.localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 }
+      },
+      audio: false
+    });
 
-    // Wait for stable state
-    if (pc.signalingState !== 'stable') {
-      console.log('[WebRTC] Waiting for stable state before renegotiation...');
-      await new Promise(resolve => {
-        const checkStable = () => {
-          if (pc.signalingState === 'stable') {
-            resolve(true);
-          } else {
-            setTimeout(checkStable, 100);
+    this.isScreenSharing = true;
+    console.log('[WebRTC] ✅ Screen stream obtained:', this.localScreenStream.id);
+
+    this.localScreenStream.getVideoTracks()[0].onended = () => {
+      console.log('[WebRTC] Screen share stopped by user');
+      this.stopScreenShare();
+    };
+
+    for (const [userId, pc] of this.peers.entries()) {
+      console.log('[WebRTC] 🔄 Adding screen share to peer:', userId);
+      
+      this.localScreenStream?.getTracks().forEach(track => {
+        console.log('[WebRTC] 📤 Adding screen track:', track.id);
+        const sender = pc.addTrack(track, this.localScreenStream!);
+        
+        // CRITICAL: Mark this transceiver as screen share
+        const transceivers = pc.getTransceivers();
+        const transceiver = transceivers.find(t => t.sender === sender);
+        if (transceiver) {
+          // Store the mid mapping (will be set after negotiation)
+          console.log('[WebRTC] 🖥️ Will mark transceiver as SCREEN (mid pending)');
+          // We'll mark it in handleAnswer when mid is assigned
+        }
+      });
+
+      await this.renegotiateConnection(userId);
+      
+      // After renegotiation, mark screen transceivers
+      const transceivers = pc.getTransceivers();
+      transceivers.forEach(t => {
+        if (t.sender.track && this.localScreenStream?.getTracks().includes(t.sender.track)) {
+          if (t.mid) {
+            this.screenTransceiverMids.add(t.mid);
+            console.log('[WebRTC] 🖥️ Marked transceiver', t.mid, 'as SCREEN');
           }
-        };
-        checkStable();
+        }
       });
     }
 
-    try {
-      console.log('[WebRTC] Renegotiating connection for:', userId);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      
-      // Notify via callback to send through signaling
-      if (this.onNeedRenegotiation) {
-        this.onNeedRenegotiation(userId, offer);
-      }
-    } catch (err) {
-      console.error('[WebRTC] Renegotiation failed:', err);
+    console.log('[WebRTC] ✅ Screen sharing enabled and sent to all peers');
+    return this.localScreenStream;
+  } catch (err) {
+    console.error('[WebRTC] ❌ Failed to start screen share:', err);
+    if (this.onError) {
+      this.onError({
+        type: 'screen',
+        message: 'Screen share access denied or not available',
+        error: err
+      });
     }
+    return null;
   }
+}
+
+// Replace stopScreenShare method:
+async stopScreenShare() {
+  if (this.localScreenStream) {
+    console.log('[WebRTC] 🛑 Stopping screen share...');
+    
+    const screenTracks = this.localScreenStream.getTracks();
+    console.log('[WebRTC] Screen tracks to stop:', screenTracks.map(t => t.id));
+    
+    // Stop all screen tracks
+    screenTracks.forEach(track => {
+      console.log('[WebRTC] Stopping screen track:', track.id);
+      track.stop();
+    });
+
+    // Remove screen senders from all peer connections
+    for (const [userId, pc] of this.peers.entries()) {
+      console.log('[WebRTC] 🗑️ Removing screen share from peer:', userId);
+      
+      const senders = pc.getSenders();
+      let removedCount = 0;
+      
+      for (const sender of senders) {
+        if (sender.track && screenTracks.includes(sender.track)) {
+          console.log('[WebRTC] Removing screen track sender:', sender.track.id);
+          pc.removeTrack(sender);
+          removedCount++;
+        }
+      }
+      
+      console.log('[WebRTC] Removed', removedCount, 'screen senders from peer:', userId);
+
+      // Renegotiate to inform the other peer
+      await this.renegotiateConnection(userId);
+    }
+
+    this.localScreenStream = null;
+    this.isScreenSharing = false;
+    console.log('[WebRTC] ✅ Screen sharing disabled');
+  }
+}
+
+  private async renegotiateConnection(userId: string) {
+  const pc = this.peers.get(userId);
+  if (!pc) {
+    console.error('[WebRTC] ❌ Cannot renegotiate: peer not found for', userId);
+    return;
+  }
+
+  console.log('[WebRTC] 🔄 Renegotiation requested for:', userId);
+  console.log('[WebRTC] Current signaling state:', pc.signalingState);
+
+  if (pc.signalingState !== 'stable') {
+    console.log('[WebRTC] ⏳ Waiting for stable state before renegotiation...');
+    await new Promise(resolve => {
+      const checkStable = () => {
+        if (pc.signalingState === 'stable') {
+          console.log('[WebRTC] ✅ Signaling state is now stable');
+          resolve(true);
+        } else {
+          console.log('[WebRTC] Still waiting... state:', pc.signalingState);
+          setTimeout(checkStable, 100);
+        }
+      };
+      checkStable();
+    });
+  }
+
+  try {
+    console.log('[WebRTC] 📝 Creating offer for renegotiation...');
+    
+    // Log current transceivers
+    const transceivers = pc.getTransceivers();
+    console.log('[WebRTC] Current transceivers:', transceivers.map(t => ({
+      mid: t.mid,
+      direction: t.direction,
+      sender_track: t.sender.track ? {
+        kind: t.sender.track.kind,
+        id: t.sender.track.id,
+        enabled: t.sender.track.enabled
+      } : null
+    })));
+    
+    const offer = await pc.createOffer();
+    console.log('[WebRTC] ✅ Offer created');
+    console.log('[WebRTC] Offer SDP (first 200 chars):', offer.sdp?.substring(0, 200));
+    
+    await pc.setLocalDescription(offer);
+    console.log('[WebRTC] ✅ Local description set');
+    
+    if (this.onNeedRenegotiation) {
+      console.log('[WebRTC] 📤 Sending renegotiation offer to:', userId);
+      this.onNeedRenegotiation(userId, offer);
+    } else {
+      console.error('[WebRTC] ❌ onNeedRenegotiation callback is null!');
+    }
+  } catch (err) {
+    console.error('[WebRTC] ❌ Renegotiation failed for', userId, ':', err);
+  }
+}
 
   createPeerConnection(userId: string): ExtendedRTCPeerConnection {
     if (this.peers.has(userId)) {
@@ -222,6 +363,13 @@ export class WebRTCManager {
       });
     }
 
+    // Add screen share tracks if active
+    if (this.localScreenStream && this.isScreenSharing) {
+      this.localScreenStream.getTracks().forEach(track => {
+        pc.addTrack(track, this.localScreenStream!);
+      });
+    }
+
     pc.onicecandidate = (event) => {
       if (event.candidate && this.onIceCandidate) {
         this.onIceCandidate(userId, event.candidate);
@@ -239,66 +387,141 @@ export class WebRTCManager {
       }
     };
 
-    pc.ontrack = (event) => {
-      console.log('[WebRTC] Received track from:', userId, 'kind:', event.track.kind, 'readyState:', event.track.readyState);
+   // In WebRTCManager.ts - Replace the ontrack handler
 
-      if (event.streams && event.streams[0]) {
-        const remoteStream = event.streams[0];
+// CRITICAL FIX: The screen detection wasn't working properly
+// Replace the pc.ontrack handler in createPeerConnection with this:
 
-        if (event.track.kind === 'audio') {
-          const audio = new Audio();
-          audio.srcObject = remoteStream;
-          audio.autoplay = true;
-          (audio as any).playsinline = true;
+pc.ontrack = (event) => {
+  console.log('[WebRTC] 🎯 ONTRACK EVENT FIRED!');
+  console.log('[WebRTC] 📥 Received track from:', userId);
+  console.log('[WebRTC] Track details:', {
+    kind: event.track.kind,
+    id: event.track.id,
+    label: event.track.label,
+    readyState: event.track.readyState
+  });
+  
+  if (event.streams && event.streams[0]) {
+    const remoteStream = event.streams[0];
+    const streamId = remoteStream.id;
 
-          pc.remoteAudio = audio;
+    if (event.track.kind === 'audio') {
+      console.log('[WebRTC] 🔊 Processing AUDIO track');
+      const audio = new Audio();
+      audio.srcObject = remoteStream;
+      audio.autoplay = true;
+      (audio as any).playsinline = true;
 
-          const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-          const ctx = new AudioContextClass();
-          const source = ctx.createMediaStreamSource(remoteStream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          source.connect(analyser);
-          pc.remoteAudioContext = ctx;
-          pc.remoteAnalyser = analyser;
+      pc.remoteAudio = audio;
 
-          if (this.onRemoteStream) {
-            this.onRemoteStream(userId, remoteStream, audio);
-          }
+      const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioContextClass();
+      const source = ctx.createMediaStreamSource(remoteStream);
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      pc.remoteAudioContext = ctx;
+      pc.remoteAnalyser = analyser;
 
-          audio.play().catch(err => {
-            console.error('[WebRTC] Failed to play remote audio:', err);
-          });
-        } else if (event.track.kind === 'video') {
-          // Create new video stream or recreate if needed
-          pc.remoteVideoStream = new MediaStream([event.track]);
+      if (this.onRemoteStream) {
+        this.onRemoteStream(userId, remoteStream, audio);
+      }
 
-          console.log('[WebRTC] Video track added for:', userId);
-          
-          // Listen for track ended (when remote user disables video)
-          event.track.onended = () => {
-            console.log('[WebRTC] Remote video track ended for:', userId);
-            pc.remoteVideoStream = undefined;
-            if (this.onRemoteVideoStream) {
-              this.onRemoteVideoStream(userId, null);
-            }
-          };
-
-          // Listen for track mute (another way video can stop)
-          event.track.onmute = () => {
-            console.log('[WebRTC] Remote video track muted for:', userId);
-          };
-
-          event.track.onunmute = () => {
-            console.log('[WebRTC] Remote video track unmuted for:', userId);
-          };
-          
-          if (this.onRemoteVideoStream) {
-            this.onRemoteVideoStream(userId, pc.remoteVideoStream);
-          }
+      audio.play().catch(err => {
+        console.error('[WebRTC] Failed to play remote audio:', err);
+      });
+      
+    } else if (event.track.kind === 'video') {
+      // CRITICAL: Determine if screen or camera by transceiver count
+      const transceivers = pc.getTransceivers();
+      const videoTransceivers = transceivers.filter(t => t.receiver.track?.kind === 'video');
+      const thisTransceiver = event.transceiver || transceivers.find(t => t.receiver.track === event.track);
+      
+      console.log('[WebRTC] 📹 Processing VIDEO track');
+      console.log('[WebRTC] Total video transceivers:', videoTransceivers.length);
+      console.log('[WebRTC] This transceiver mid:', thisTransceiver?.mid);
+      
+      // LOGIC: First video = camera, Second video = screen
+      let isScreenTrack = false;
+      
+      if (videoTransceivers.length === 1) {
+        // Only one video track = must be camera
+        isScreenTrack = false;
+        console.log('[WebRTC] 📹 Only 1 video track → CAMERA');
+      } else if (videoTransceivers.length >= 2) {
+        // Multiple video tracks: check which one this is
+        const videoTrackIndex = videoTransceivers.findIndex(t => t.receiver.track === event.track);
+        if (videoTrackIndex === 0) {
+          isScreenTrack = false;
+          console.log('[WebRTC] 📹 First video track → CAMERA');
+        } else {
+          isScreenTrack = true;
+          console.log('[WebRTC] 🖥️ Second/later video track → SCREEN SHARE');
         }
       }
-    };
+      
+      console.log('[WebRTC] 🔍 Final decision: isScreenTrack =', isScreenTrack);
+      
+      if (isScreenTrack) {
+        // ========== SCREEN SHARE ==========
+        console.log('[WebRTC] 🖥️🖥️🖥️ CONFIRMED SCREEN SHARE from:', userId);
+        
+        if (!pc.remoteScreenStream || pc.remoteScreenStream.id !== streamId) {
+          pc.remoteScreenStream = new MediaStream([event.track]);
+          console.log('[WebRTC] ✅ Created NEW screen stream, ID:', streamId);
+        } else {
+          pc.remoteScreenStream.addTrack(event.track);
+        }
+
+        event.track.onended = () => {
+          console.log('[WebRTC] ❌ Remote SCREEN track ended for:', userId);
+          pc.remoteScreenStream = undefined;
+          if (this.onRemoteScreenStream) {
+            this.onRemoteScreenStream(userId, null);
+          }
+        };
+
+        if (this.onRemoteScreenStream) {
+          console.log('[WebRTC] 🔔 CALLING onRemoteScreenStream callback');
+          this.onRemoteScreenStream(userId, pc.remoteScreenStream);
+        }
+        
+      } else {
+        // ========== CAMERA VIDEO ==========
+        console.log('[WebRTC] 📹📹📹 CONFIRMED CAMERA VIDEO from:', userId);
+        
+        if (!pc.remoteVideoStream || pc.remoteVideoStream.id !== streamId) {
+          pc.remoteVideoStream = new MediaStream([event.track]);
+          console.log('[WebRTC] ✅ Created NEW camera video stream, ID:', streamId);
+        } else {
+          pc.remoteVideoStream.addTrack(event.track);
+        }
+
+        event.track.onended = () => {
+          console.log('[WebRTC] ❌ Remote CAMERA track ended for:', userId);
+          pc.remoteVideoStream = undefined;
+          if (this.onRemoteVideoStream) {
+            this.onRemoteVideoStream(userId, null);
+          }
+        };
+
+        if (this.onRemoteVideoStream) {
+          console.log('[WebRTC] 🔔 CALLING onRemoteVideoStream callback');
+          this.onRemoteVideoStream(userId, pc.remoteVideoStream);
+        }
+      }
+      
+      event.track.onmute = () => {
+        console.log(`[WebRTC] 🔇 ${isScreenTrack ? 'Screen' : 'Camera'} track MUTED:`, userId);
+      };
+
+      event.track.onunmute = () => {
+        console.log(`[WebRTC] 🔊 ${isScreenTrack ? 'Screen' : 'Camera'} track UNMUTED:`, userId);
+      };
+    }
+  }
+};
 
     this.peers.set(userId, pc);
     return pc;
@@ -322,27 +545,80 @@ export class WebRTCManager {
   }
 
   async handleOffer(userId: string, offer: RTCSessionDescriptionInit) {
-    try {
-      const pc = this.createPeerConnection(userId);
-      
-      console.log('[WebRTC] Handling offer from:', userId);
-      
-      // Check if this is a renegotiation (remote description already set)
-      if (pc.signalingState === 'have-remote-offer') {
-        console.log('[WebRTC] Already have remote offer, rolling back...');
-        await pc.setLocalDescription({ type: 'rollback' });
-      }
-      
-      await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      return answer;
-    } catch (err) {
-      console.error('[WebRTC] Failed to handle offer:', err);
-      throw err;
+  try {
+    console.log('[WebRTC] 🔵 Handling offer from:', userId);
+    console.log('[WebRTC] Offer type:', offer.type);
+    console.log('[WebRTC] Offer SDP (first 300 chars):', offer.sdp?.substring(0, 300));
+    
+    const pc = this.createPeerConnection(userId);
+    
+    console.log('[WebRTC] Current signaling state:', pc.signalingState);
+    console.log('[WebRTC] Current remote description:', pc.remoteDescription?.type || 'none');
+    
+    // Count m= lines in SDP to see how many media streams
+    const mLines = (offer.sdp?.match(/^m=/gm) || []).length;
+    console.log('[WebRTC] 📊 Number of media streams in offer:', mLines);
+    
+    if (pc.signalingState === 'have-remote-offer') {
+      console.log('[WebRTC] ⚠️ Already have remote offer, rolling back...');
+      await pc.setLocalDescription({ type: 'rollback' });
     }
+    
+    // CRITICAL: Log current transceivers BEFORE setting remote description
+    const beforeTransceivers = pc.getTransceivers();
+    console.log('[WebRTC] Transceivers BEFORE setRemoteDescription:', beforeTransceivers.length);
+    beforeTransceivers.forEach((t, i) => {
+      console.log(`  [${i}] mid: ${t.mid}, direction: ${t.direction}, sender track:`, 
+        t.sender.track ? { kind: t.sender.track.kind, id: t.sender.track.id } : 'none');
+    });
+    
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    console.log('[WebRTC] ✅ Remote description set');
+    
+    // CRITICAL: Log transceivers AFTER setting remote description
+    const afterTransceivers = pc.getTransceivers();
+    console.log('[WebRTC] Transceivers AFTER setRemoteDescription:', afterTransceivers.length);
+    afterTransceivers.forEach((t, i) => {
+      console.log(`  [${i}] mid: ${t.mid}, direction: ${t.direction}, receiver track:`, 
+        t.receiver.track ? { kind: t.receiver.track.kind, id: t.receiver.track.id, label: t.receiver.track.label } : 'none');
+    });
+    
+    // Check if new transceivers were added
+    if (afterTransceivers.length > beforeTransceivers.length) {
+      console.log('[WebRTC] 🆕 NEW transceivers detected!', 
+        afterTransceivers.length - beforeTransceivers.length, 'new tracks');
+      
+      // The new tracks should trigger ontrack events
+      // If they don't, it means the tracks are in the transceiver but not firing events
+      for (let i = beforeTransceivers.length; i < afterTransceivers.length; i++) {
+        const t = afterTransceivers[i];
+        console.log('[WebRTC] New transceiver', i, ':', {
+          mid: t.mid,
+          direction: t.direction,
+          receiver_track: t.receiver.track ? {
+            kind: t.receiver.track.kind,
+            id: t.receiver.track.id,
+            label: t.receiver.track.label,
+            readyState: t.receiver.track.readyState
+          } : 'none'
+        });
+      }
+    }
+
+    const answer = await pc.createAnswer();
+    console.log('[WebRTC] ✅ Answer created');
+    console.log('[WebRTC] Answer SDP (first 200 chars):', answer.sdp?.substring(0, 200));
+    
+    await pc.setLocalDescription(answer);
+    console.log('[WebRTC] ✅ Local description set (answer)');
+    
+    return answer;
+  } catch (err) {
+    console.error('[WebRTC] ❌ Failed to handle offer:', err);
+    throw err;
   }
+}
+
 
   async handleAnswer(userId: string, answer: RTCSessionDescriptionInit) {
     try {
@@ -430,6 +706,11 @@ export class WebRTCManager {
       this.localVideoStream = null;
     }
 
+    if (this.localScreenStream) {
+      this.localScreenStream.getTracks().forEach(track => track.stop());
+      this.localScreenStream = null;
+    }
+
     if (this.audioContext) {
       this.audioContext.close();
       this.audioContext = null;
@@ -451,8 +732,17 @@ export class WebRTCManager {
     return pc?.remoteVideoStream || null;
   }
 
+  getRemoteScreenStream(userId: string): MediaStream | null {
+    const pc = this.peers.get(userId);
+    return pc?.remoteScreenStream || null;
+  }
+
   getLocalVideoStream(): MediaStream | null {
     return this.localVideoStream;
+  }
+
+  getLocalScreenStream(): MediaStream | null {
+    return this.localScreenStream;
   }
 
   hasMicrophone() {

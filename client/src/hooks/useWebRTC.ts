@@ -7,9 +7,12 @@ export const useWebRTC = (socket: any, userId: string | null) => {
   const [isInitialized, setIsInitialized] = useState(false);
   const [isTransmitting, setIsTransmitting] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(false);
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
   const [remoteVideoStreams, setRemoteVideoStreams] = useState<Map<string, MediaStream | null>>(new Map());
+  const [remoteScreenStreams, setRemoteScreenStreams] = useState<Map<string, MediaStream | null>>(new Map());
   const [localVideoStream, setLocalVideoStream] = useState<MediaStream | null>(null);
+  const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
 
   useEffect(() => {
     socketRef.current = socket;
@@ -32,10 +35,21 @@ export const useWebRTC = (socket: any, userId: string | null) => {
       setRemoteVideoStreams((prev) => {
         const next = new Map(prev);
         if (stream === null) {
-          // Video stopped - set to null but keep the entry
           next.set(remoteId, null);
         } else {
-          // Video started/updated
+          next.set(remoteId, stream);
+        }
+        return next;
+      });
+    };
+
+    manager.onRemoteScreenStream = (remoteId, stream) => {
+      console.log('[useWebRTC] Remote screen stream update for:', remoteId, 'stream:', stream ? 'present' : 'null');
+      setRemoteScreenStreams((prev) => {
+        const next = new Map(prev);
+        if (stream === null) {
+          next.set(remoteId, null);
+        } else {
           next.set(remoteId, stream);
         }
         return next;
@@ -50,7 +64,6 @@ export const useWebRTC = (socket: any, userId: string | null) => {
       });
     };
 
-    // Handle renegotiation (when video is enabled/disabled mid-call)
     manager.onNeedRenegotiation = (targetUserId, offer) => {
       console.log('[useWebRTC] Sending renegotiation offer to:', targetUserId);
       socketRef.current?.emit("message", {
@@ -149,6 +162,25 @@ export const useWebRTC = (socket: any, userId: string | null) => {
     }
   }, []);
 
+  const toggleScreenShare = useCallback(async () => {
+    const manager = managerRef.current;
+    if (!manager) return;
+
+    if (!manager.isScreenSharing) {
+      console.log('[useWebRTC] Starting screen share...');
+      const stream = await manager.startScreenShare();
+      if (stream) {
+        setLocalScreenStream(stream);
+        setIsScreenSharing(true);
+      }
+    } else {
+      console.log('[useWebRTC] Stopping screen share...');
+      await manager.stopScreenShare();
+      setLocalScreenStream(null);
+      setIsScreenSharing(false);
+    }
+  }, []);
+
   const getPeerStatus = useCallback((userId: string) => {
     return managerRef.current?.getPeerStatus(userId) || 'disconnected';
   }, []);
@@ -156,6 +188,11 @@ export const useWebRTC = (socket: any, userId: string | null) => {
   const removePeer = useCallback((userId: string) => {
     managerRef.current?.removePeer(userId);
     setRemoteVideoStreams((prev) => {
+      const next = new Map(prev);
+      next.delete(userId);
+      return next;
+    });
+    setRemoteScreenStreams((prev) => {
       const next = new Map(prev);
       next.delete(userId);
       return next;
@@ -178,12 +215,16 @@ export const useWebRTC = (socket: any, userId: string | null) => {
     isInitialized,
     isTransmitting,
     isVideoEnabled,
+    isScreenSharing,
     localVideoStream,
+    localScreenStream,
     remoteStreams,
     remoteVideoStreams,
+    remoteScreenStreams,
     startCalling,
     toggleTransmit,
     toggleVideo,
+    toggleScreenShare,
     getAudioLevel,
     getRemoteAudioLevel,
     getPeerStatus,
