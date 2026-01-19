@@ -18,7 +18,7 @@ export default defineConfig({
       manifest: {
         name: 'Manaka Kura',
         short_name: 'ManakaKura',
-        description: 'Seamless connections, Infinite Conversations At Manaka Kura',
+        description: 'Seamless connections, Infinite Conversations At Manaka Kura Have Fun',
         theme_color: '#000000', 
         icons: [
           { src: 'image.png', sizes: '192x192', type: 'image/png' },
