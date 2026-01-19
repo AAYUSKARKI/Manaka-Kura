@@ -37,7 +37,8 @@ const notificationSound = typeof Audio !== "undefined" ? new Audio("/bell.mp3") 
           //   if (data.fromUserId !== myId) {
           //   addMessage(data.username || data.fromUserId, data.content);
           // }
-          if (Notification.permission === "granted" && document.hidden) {
+          
+          if (Notification.permission === "granted") {
             notificationSound?.play().catch(err => console.error("Audio play failed:", err));
             const notification = new Notification(`New message from ${data.username || data.fromUserId}`, {
               body: data.content,
